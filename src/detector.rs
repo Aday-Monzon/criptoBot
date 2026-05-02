@@ -1,4 +1,5 @@
 // Importaciones necesarias
+use crate::evaluador::{DatosSwap, calcular_precio};
 use ethers::{
     abi::{ParamType, decode},
     providers::{Middleware, Provider, Ws},
@@ -52,10 +53,22 @@ pub async fn iniciar(rpc_polygon: &str) {
             let amount0_out: U256 = datos[2].clone().into_uint().unwrap_or_default();
             let amount1_out: U256 = datos[3].clone().into_uint().unwrap_or_default();
 
-            info!(
-                "🔄 Swap en pool {:?} — amount0_in: {} | amount1_in: {} | amount0_out: {} | amount1_out: {}",
-                log.address, amount0_in, amount1_in, amount0_out, amount1_out
-            );
+            // Construir estructura del swap
+            let swap = DatosSwap {
+                pool: format!("{:?}", log.address),
+                amount0_in: amount0_in.as_u128(),
+                amount1_in: amount1_in.as_u128(),
+                amount0_out: amount0_out.as_u128(),
+                amount1_out: amount1_out.as_u128(),
+            };
+
+            // Calcular precio
+            if let Some(precio) = calcular_precio(&swap) {
+                info!(
+                    "💰 Pool {:?} — Precio: {:.6} USDC/MATIC",
+                    log.address, precio
+                );
+            }
         }
     }
 }
