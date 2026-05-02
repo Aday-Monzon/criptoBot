@@ -4,3 +4,15 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# Runtime asíncrono — maneja la concurrencia del detector
+tokio = { version = "1", features = ["full"] }
+
+# Conexión a la blockchain (Polygon y Base)
+ethers = { version = "2", features = ["ws", "rustls"] }
+
+# Variables de entorno — para guardar claves privadas y URLs de RPC
+dotenv = "0.15"
+
+# Logs — para monitorear lo que hace el bot en tiempo real
+tracing = "0.1"
+tracing-subscriber = "0.3"
