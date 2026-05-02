@@ -1,5 +1,5 @@
 // Importaciones necesarias
-use crate::evaluador::{DatosSwap, calcular_precio};
+use crate::evaluador::{DatosSwap, evaluar_arbitraje};
 use ethers::{
     abi::{ParamType, decode},
     providers::{Middleware, Provider, Ws},
@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tracing::info;
 
 // Topic del evento Swap en Uniswap V2
-const TOPIC_SWAP: &str = "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822";
+const TOPIC_SWAP: &str = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67";
 
 pub async fn iniciar(rpc_polygon: &str) {
     info!("📡 Conectando detector a Polygon...");
@@ -37,38 +37,54 @@ pub async fn iniciar(rpc_polygon: &str) {
         .await
         .expect("Error al suscribirse a logs");
 
+    let mut precios = std::collections::HashMap::new();
     // Procesar cada evento de swap
     while let Some(log) = stream.next().await {
         // Decodificar los datos del evento
         let tipos = vec![
-            ParamType::Uint(256), // amount0In
-            ParamType::Uint(256), // amount1In
-            ParamType::Uint(256), // amount0Out
-            ParamType::Uint(256), // amount1Out
+            ParamType::Int(256),  // amount0 — puede ser negativo en V3
+            ParamType::Int(256),  // amount1 — puede ser negativo en V3
+            ParamType::Uint(256), // sqrtPriceX96
+            ParamType::Uint(256), // liquidity
+            ParamType::Int(32),   // tick
         ];
 
         if let Ok(datos) = decode(&tipos, &log.data) {
-            let amount0_in: U256 = datos[0].clone().into_uint().unwrap_or_default();
-            let amount1_in: U256 = datos[1].clone().into_uint().unwrap_or_default();
-            let amount0_out: U256 = datos[2].clone().into_uint().unwrap_or_default();
-            let amount1_out: U256 = datos[3].clone().into_uint().unwrap_or_default();
+            use ethers::types::I256;
 
-            // Construir estructura del swap
+            // En V3 los amounts son signed
+            let amount0 = I256::from_raw(datos[0].clone().into_uint().unwrap_or_default());
+            let amount1 = I256::from_raw(datos[1].clone().into_uint().unwrap_or_default());
+
+            // Valor absoluto como u128
+            let amount0_abs = amount0.unsigned_abs().as_u128();
+            let amount1_abs = amount1.unsigned_abs().as_u128();
+
             let swap = DatosSwap {
                 pool: format!("{:?}", log.address),
-                amount0_in: amount0_in.as_u128(),
-                amount1_in: amount1_in.as_u128(),
-                amount0_out: amount0_out.as_u128(),
-                amount1_out: amount1_out.as_u128(),
+                amount0_in: if amount0.is_positive() {
+                    amount0_abs
+                } else {
+                    0
+                },
+                amount1_in: if amount1.is_positive() {
+                    amount1_abs
+                } else {
+                    0
+                },
+                amount0_out: if amount0.is_negative() {
+                    amount0_abs
+                } else {
+                    0
+                },
+                amount1_out: if amount1.is_negative() {
+                    amount1_abs
+                } else {
+                    0
+                },
             };
 
-            // Calcular precio
-            if let Some(precio) = calcular_precio(&swap) {
-                info!(
-                    "💰 Pool {:?} — Precio: {:.6} USDC/MATIC",
-                    log.address, precio
-                );
-            }
+            evaluar_arbitraje(&swap, &mut precios);
         }
     }
 }
