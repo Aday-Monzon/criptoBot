@@ -16,3 +16,4 @@ dotenv = "0.15"
 # Logs — para monitorear lo que hace el bot en tiempo real
 tracing = "0.1"
 tracing-subscriber = "0.3"
+futures-util = "0.3"
