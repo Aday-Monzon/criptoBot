@@ -8,7 +8,6 @@ mod firmante;
 use dotenv::dotenv;
 use std::env;
 
-// Runtime asíncrono
 #[tokio::main]
 async fn main() {
     // Cargar variables de entorno
@@ -19,6 +18,12 @@ async fn main() {
 
     tracing::info!("🤖 CriptoBot iniciando...");
 
+    // Crear wallet de desarrollo
+    // Cargar clave privada si existe
+    let clave_privada = env::var("CLAVE_PRIVADA").ok();
+
+    // Crear wallet
+    let wallet = firmante::crear_wallet(clave_privada).await;
     // Obtener URL de Polygon del archivo .env
     let rpc_polygon = env::var("RPC_POLYGON").expect("RPC_POLYGON no encontrado en .env");
 
