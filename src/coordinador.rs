@@ -17,7 +17,7 @@ pub async fn ejecutar_oportunidad(
     diferencia: f64,
     pool_compra: String,
     pool_venta: String,
-    wallet: &LocalWallet,
+    wallet: &ethers::signers::LocalWallet,
 ) {
     info!(
         "⚙️  Coordinador activado — diferencia: {:.4}% — ejecutando arbitraje...",

@@ -85,9 +85,8 @@ pub async fn iniciar(rpc_polygon: &str, wallet: &ethers::signers::LocalWallet) {
                 },
             };
 
-            if let Some(diferencia) = evaluar_arbitraje(&swap, &mut precios) {
-                ejecutar_oportunidad(diferencia, swap.pool.clone(), swap.pool.clone(), wallet)
-                    .await;
+            if let Some((diferencia, pool_a, pool_b)) = evaluar_arbitraje(&swap, &mut precios) {
+                ejecutar_oportunidad(diferencia, pool_a, pool_b, wallet).await;
             }
         }
     }
