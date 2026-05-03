@@ -1,4 +1,5 @@
 // Importaciones necesarias
+use crate::coordinador::ejecutar_oportunidad;
 use crate::evaluador::{DatosSwap, evaluar_arbitraje};
 use ethers::{
     abi::{ParamType, decode},
@@ -12,7 +13,7 @@ use tracing::info;
 // Topic del evento Swap en Uniswap V2
 const TOPIC_SWAP: &str = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67";
 
-pub async fn iniciar(rpc_polygon: &str) {
+pub async fn iniciar(rpc_polygon: &str, wallet: &ethers::signers::LocalWallet) {
     info!("📡 Conectando detector a Polygon...");
 
     // Conectar vía WebSocket
@@ -84,7 +85,10 @@ pub async fn iniciar(rpc_polygon: &str) {
                 },
             };
 
-            evaluar_arbitraje(&swap, &mut precios);
+            if let Some(diferencia) = evaluar_arbitraje(&swap, &mut precios) {
+                ejecutar_oportunidad(diferencia, swap.pool.clone(), swap.pool.clone(), wallet)
+                    .await;
+            }
         }
     }
 }

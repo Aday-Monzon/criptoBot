@@ -28,5 +28,5 @@ async fn main() {
     let rpc_polygon = env::var("RPC_POLYGON").expect("RPC_POLYGON no encontrado en .env");
 
     // Iniciar el detector
-    detector::iniciar(&rpc_polygon).await;
+    detector::iniciar(&rpc_polygon, &wallet).await;
 }
