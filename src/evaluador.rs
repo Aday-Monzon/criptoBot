@@ -41,11 +41,11 @@ pub fn calcular_precio(swap: &DatosSwap) -> Option<f64> {
 }
 
 // Evalúa si hay oportunidad de arbitraje entre dos pools
-pub fn evaluar_arbitraje(swap: &DatosSwap, precios: &mut HashMap<String, f64>) {
+pub fn evaluar_arbitraje(swap: &DatosSwap, precios: &mut HashMap<String, f64>) -> Option<f64> {
     // Verificar que el swap es de uno de nuestros pools
     let pool_lower = swap.pool.to_lowercase();
     if pool_lower != POOL_QUICKSWAP && pool_lower != POOL_UNISWAP {
-        return;
+        return None;
     }
 
     // Calcular precio del swap actual
@@ -71,7 +71,11 @@ pub fn evaluar_arbitraje(swap: &DatosSwap, precios: &mut HashMap<String, f64>) {
                     precios.get(POOL_QUICKSWAP).unwrap_or(&0.0),
                     precios.get(POOL_UNISWAP).unwrap_or(&0.0)
                 );
+
+                return Some(diferencia);
             }
         }
     }
+
+    None
 }
