@@ -109,8 +109,8 @@ pub async fn iniciar(rpc_polygon: &str, wallet: &ethers::signers::LocalWallet, r
                         POOLS_WPOL_USDT.iter().find(|p| p.direccion == pool).map(|p| p.dex).unwrap_or("?"),
                         &pool[..10]);
 
-                    if let Some((dif, pa, pb)) = evaluar_arbitraje(&swap, &mut precios, &tokens_por_pool) {
-                        ejecutar_oportunidad(dif, pa, pb, wallet, rpc_amoy).await;
+                    if let Some((dif, pa, pb, precio)) = evaluar_arbitraje(&swap, &mut precios, &tokens_por_pool) {
+                        ejecutar_oportunidad(dif, pa, pb, precio, wallet, rpc_amoy).await;
                     }
                 }
             }
@@ -143,8 +143,8 @@ pub async fn iniciar(rpc_polygon: &str, wallet: &ethers::signers::LocalWallet, r
                         POOLS_WPOL_USDT.iter().find(|p| p.direccion == pool).map(|p| p.dex).unwrap_or("?"),
                         &pool[..10]);
 
-                    if let Some((dif, pa, pb)) = evaluar_arbitraje(&swap, &mut precios, &tokens_por_pool) {
-                        ejecutar_oportunidad(dif, pa, pb, wallet, rpc_amoy).await;
+                    if let Some((dif, pa, pb, precio)) = evaluar_arbitraje(&swap, &mut precios, &tokens_por_pool) {
+                        ejecutar_oportunidad(dif, pa, pb, precio, wallet, rpc_amoy).await;
                     }
                 }
             }

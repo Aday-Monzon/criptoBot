@@ -22,6 +22,7 @@ pub async fn ejecutar_oportunidad(
     diferencia: f64,
     pool_compra: String,
     pool_venta: String,
+    precio: f64,
     wallet: &LocalWallet,
     rpc_amoy: &str,
 ) {
@@ -30,14 +31,18 @@ pub async fn ejecutar_oportunidad(
         diferencia
     );
 
-    // Construir oportunidad
+    // Calcular monto mínimo con 0.5% de slippage máximo
+    let slippage = 0.005_f64;
+    let monto_esperado = MONTO_ENTRADA as f64 / precio;
+    let monto_minimo = (monto_esperado * (1.0 - slippage)) as u64;
+
     let oportunidad = Oportunidad {
         pool_compra: pool_compra.clone(),
         pool_venta: pool_venta.clone(),
         token_entrada: TOKEN_USDT.to_string(),
         token_salida: TOKEN_WPOL.to_string(),
         monto_entrada: U256::from(MONTO_ENTRADA),
-        monto_minimo_salida: U256::from(0),
+        monto_minimo_salida: U256::from(monto_minimo),
     };
 
     // Construir calldata

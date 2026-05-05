@@ -33,7 +33,7 @@ pub fn evaluar_arbitraje(
     swap: &DatosSwap,
     precios: &mut HashMap<String, f64>,
     tokens_por_pool: &HashMap<String, (String, String)>,
-) -> Option<(f64, String, String)> {
+) -> Option<(f64, String, String, f64)> {
     // Obtener tokens del pool actual
     let tokens_actual = tokens_por_pool.get(&swap.pool)?;
 
@@ -77,7 +77,12 @@ pub fn evaluar_arbitraje(
                 "🚨 OPORTUNIDAD — Par: {}/{} — Diferencia: {:.4}% — Compra: {} — Venta: {}",
                 tokens_actual.0, tokens_actual.1, diferencia, swap.pool, pool_guardado
             );
-            return Some((diferencia, swap.pool.clone(), pool_guardado.clone()));
+            return Some((
+                diferencia,
+                swap.pool.clone(),
+                pool_guardado.clone(),
+                precio_actual,
+            ));
         }
     }
 
