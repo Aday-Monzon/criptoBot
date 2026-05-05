@@ -11,7 +11,7 @@ pub struct DatosSwap {
 }
 
 // Umbral mínimo de rentabilidad
-const UMBRAL_PORCENTAJE: f64 = 0.005;
+const UMBRAL_PORCENTAJE: f64 = 0.1;
 
 // Calcula el precio implícito del swap
 pub fn calcular_precio(swap: &DatosSwap) -> Option<f64> {
