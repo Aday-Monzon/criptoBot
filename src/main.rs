@@ -29,9 +29,7 @@ async fn main() {
     // Obtener URL de Polygon del archivo .env
     let rpc_polygon = env::var("RPC_POLYGON").expect("RPC_POLYGON no encontrado en .env");
 
-    let rpc_amoy = env::var("RPC_AMOY").expect("RPC_AMOY no encontrado en .env");
-    firmante::enviar_transaccion_prueba(&wallet, &rpc_amoy).await;
-
     // Iniciar el detector
-    detector::iniciar(&rpc_polygon, &wallet).await;
+    let rpc_amoy = env::var("RPC_AMOY").expect("RPC_AMOY no encontrado en .env");
+    detector::iniciar(&rpc_polygon, &wallet, &rpc_amoy).await;
 }

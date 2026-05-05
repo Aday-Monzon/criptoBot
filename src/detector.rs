@@ -15,7 +15,7 @@ use tracing::info;
 const TOPIC_V2: &str = "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822";
 const TOPIC_V3: &str = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67";
 
-pub async fn iniciar(rpc_polygon: &str, wallet: &ethers::signers::LocalWallet) {
+pub async fn iniciar(rpc_polygon: &str, wallet: &ethers::signers::LocalWallet, rpc_amoy: &str) {
     info!("📡 Conectando detector a Polygon...");
 
     let proveedor = Arc::new(
@@ -110,7 +110,7 @@ pub async fn iniciar(rpc_polygon: &str, wallet: &ethers::signers::LocalWallet) {
                         &pool[..10]);
 
                     if let Some((dif, pa, pb)) = evaluar_arbitraje(&swap, &mut precios, &tokens_por_pool) {
-                        ejecutar_oportunidad(dif, pa, pb, wallet).await;
+                        ejecutar_oportunidad(dif, pa, pb, wallet, rpc_amoy).await;
                     }
                 }
             }
@@ -144,7 +144,7 @@ pub async fn iniciar(rpc_polygon: &str, wallet: &ethers::signers::LocalWallet) {
                         &pool[..10]);
 
                     if let Some((dif, pa, pb)) = evaluar_arbitraje(&swap, &mut precios, &tokens_por_pool) {
-                        ejecutar_oportunidad(dif, pa, pb, wallet).await;
+                        ejecutar_oportunidad(dif, pa, pb, wallet, rpc_amoy).await;
                     }
                 }
             }
