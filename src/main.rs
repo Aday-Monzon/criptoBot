@@ -4,6 +4,8 @@ mod coordinador;
 mod detector;
 mod evaluador;
 mod firmante;
+mod pools;
+mod tokens;
 
 use dotenv::dotenv;
 use std::env;
