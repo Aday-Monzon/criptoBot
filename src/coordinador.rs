@@ -51,6 +51,16 @@ pub async fn ejecutar_oportunidad(
     let wallet_amoy = wallet.clone().with_chain_id(80002u64);
     let cliente = Arc::new(SignerMiddleware::new(proveedor, wallet_amoy));
 
+    // Aprobar token antes del swap
+    crate::firmante::aprobar_token(
+        wallet,
+        rpc_amoy,
+        TOKEN_USDT,
+        ROUTER_QUICKSWAP,
+        U256::from(MONTO_ENTRADA),
+    )
+    .await;
+
     // Construir transacción al router de QuickSwap
     let router: ethers::types::Address = ROUTER_QUICKSWAP.parse().expect("Router inválido");
 

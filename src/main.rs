@@ -26,6 +26,7 @@ async fn main() {
 
     // Crear wallet
     let wallet = firmante::crear_wallet(clave_privada).await;
+
     // Obtener URL de Polygon del archivo .env
     let rpc_polygon = env::var("RPC_POLYGON").expect("RPC_POLYGON no encontrado en .env");
 
