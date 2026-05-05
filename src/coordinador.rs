@@ -13,7 +13,7 @@ const TOKEN_WPOL: &str = "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270";
 const TOKEN_USDT: &str = "0xc2132D05D31c914a87C6611C10748AEb04B58e8F";
 
 // Dirección del router de QuickSwap V2 en Polygon
-const ROUTER_QUICKSWAP: &str = "0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff";
+const CONTRATO_ARBITRAGE: &str = "0xed814B0811A0E0743369d38d50D3f5f697b8F06F";
 
 // Monto de entrada — 1 USDT en unidades mínimas (6 decimales)
 const MONTO_ENTRADA: u64 = 1_000_000;
@@ -61,19 +61,39 @@ pub async fn ejecutar_oportunidad(
         wallet,
         rpc_amoy,
         TOKEN_USDT,
-        ROUTER_QUICKSWAP,
+        CONTRATO_ARBITRAGE,
         U256::from(MONTO_ENTRADA),
     )
     .await;
 
     // Construir transacción al router de QuickSwap
-    let router: ethers::types::Address = ROUTER_QUICKSWAP.parse().expect("Router inválido");
+    // Selector de ejecutarArbitraje(address,address,address,address,uint256)
+    let selector =
+        &ethers::utils::keccak256("ejecutarArbitraje(address,address,address,address,uint256)")
+            [..4];
+
+    let pool_compra_addr: ethers::types::Address =
+        pool_compra.parse().expect("Pool compra inválido");
+    let pool_venta_addr: ethers::types::Address = pool_venta.parse().expect("Pool venta inválido");
+    let token0_addr: ethers::types::Address = TOKEN_WPOL.parse().expect("Token0 inválido");
+    let token1_addr: ethers::types::Address = TOKEN_USDT.parse().expect("Token1 inválido");
+
+    let mut calldata_contrato = selector.to_vec();
+    calldata_contrato.extend_from_slice(&ethers::abi::encode(&[
+        ethers::abi::Token::Address(pool_compra_addr),
+        ethers::abi::Token::Address(pool_venta_addr),
+        ethers::abi::Token::Address(token0_addr),
+        ethers::abi::Token::Address(token1_addr),
+        ethers::abi::Token::Uint(U256::from(MONTO_ENTRADA)),
+    ]));
+
+    let contrato_addr: ethers::types::Address =
+        CONTRATO_ARBITRAGE.parse().expect("Contrato inválido");
 
     let tx = TransactionRequest::new()
-        .to(router)
-        .data(calldata)
+        .to(contrato_addr)
+        .data(calldata_contrato)
         .value(U256::zero());
-
     info!("✍️  Firmando y enviando a Amoy...");
 
     match cliente.send_transaction(tx, None).await {
