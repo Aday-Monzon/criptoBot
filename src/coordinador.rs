@@ -13,7 +13,7 @@ const TOKEN_WPOL: &str = "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270";
 const TOKEN_USDT: &str = "0xc2132D05D31c914a87C6611C10748AEb04B58e8F";
 
 // Dirección del router de QuickSwap V2 en Polygon
-const CONTRATO_ARBITRAGE: &str = "0xed814B0811A0E0743369d38d50D3f5f697b8F06F";
+const CONTRATO_ARBITRAGE: &str = "0x8e4523546efab22bce9b7001507aeba8304e57fb";
 
 // Monto de entrada — 1 USDT en unidades mínimas (6 decimales)
 const MONTO_ENTRADA: u64 = 1_000_000;
@@ -51,9 +51,9 @@ pub async fn ejecutar_oportunidad(
     info!("📦 Transacción construida — {} bytes", calldata.len());
 
     // Conectar a Amoy para enviar
-    let proveedor = Provider::<Http>::try_from(rpc_amoy).expect("Error conectando a Amoy");
+    let proveedor = Provider::<Http>::try_from(rpc_amoy).expect("Error conectando a Polygon");
 
-    let wallet_amoy = wallet.clone().with_chain_id(80002u64);
+    let wallet_amoy = wallet.clone().with_chain_id(137u64);
     let cliente = Arc::new(SignerMiddleware::new(proveedor, wallet_amoy));
 
     // Aprobar token antes del swap

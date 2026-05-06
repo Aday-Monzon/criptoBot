@@ -22,7 +22,7 @@ async fn main() {
 
     // Crear wallet de desarrollo
     // Cargar clave privada si existe
-    let clave_privada = env::var("CLAVE_PRIVADA").ok();
+    let clave_privada = env::var("CLAVE_PRIVADA").ok().filter(|s| !s.is_empty());
 
     // Crear wallet
     let wallet = firmante::crear_wallet(clave_privada).await;
@@ -31,6 +31,6 @@ async fn main() {
     let rpc_polygon = env::var("RPC_POLYGON").expect("RPC_POLYGON no encontrado en .env");
 
     // Iniciar el detector
-    let rpc_amoy = env::var("RPC_AMOY").expect("RPC_AMOY no encontrado en .env");
+    let rpc_amoy = env::var("RPC_MAINNET").expect("RPC_MAINNET no encontrado en .env");
     detector::iniciar(&rpc_polygon, &wallet, &rpc_amoy).await;
 }

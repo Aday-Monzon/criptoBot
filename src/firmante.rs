@@ -39,7 +39,7 @@ pub async fn enviar_transaccion_prueba(wallet: &LocalWallet, rpc_amoy: &str) {
     let proveedor = Provider::<Http>::try_from(rpc_amoy).expect("Error conectando a Amoy");
 
     // Configurar wallet con chain ID de Amoy (80002)
-    let wallet = wallet.clone().with_chain_id(80002u64);
+    let wallet = wallet.clone().with_chain_id(137u64);
 
     // Crear cliente firmante
     let cliente = Arc::new(SignerMiddleware::new(proveedor, wallet.clone()));
