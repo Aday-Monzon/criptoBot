@@ -81,7 +81,7 @@ pub async fn aprobar_token(
 
     let proveedor = Provider::<Http>::try_from(rpc_amoy).expect("Error conectando");
 
-    let wallet_amoy = wallet.clone().with_chain_id(80002u64);
+    let wallet_amoy = wallet.clone().with_chain_id(137u64);
     let cliente = Arc::new(SignerMiddleware::new(proveedor, wallet_amoy.clone()));
 
     let token_addr: ethers::types::Address = token.parse().expect("Token inválido");

@@ -11,11 +11,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::info;
 
-// Topics de swap
 const TOPIC_V2: &str = "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822";
 const TOPIC_V3: &str = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67";
 
-pub async fn iniciar(rpc_polygon: &str, wallet: &ethers::signers::LocalWallet, rpc_amoy: &str) {
+pub async fn iniciar(rpc_polygon: &str, wallet: &ethers::signers::LocalWallet, rpc_mainnet: &str) {
     info!("📡 Conectando detector a Polygon...");
 
     let proveedor = Arc::new(
@@ -26,7 +25,6 @@ pub async fn iniciar(rpc_polygon: &str, wallet: &ethers::signers::LocalWallet, r
 
     info!("✅ Detector conectado a Polygon correctamente");
 
-    // Construir lista de direcciones y versiones desde la config
     let direcciones_v2: Vec<ethers::types::Address> = POOLS_WPOL_USDT
         .iter()
         .filter(|p| p.version == 2)
@@ -45,37 +43,30 @@ pub async fn iniciar(rpc_polygon: &str, wallet: &ethers::signers::LocalWallet, r
         direcciones_v3.len()
     );
 
-    // Filtros separados para V2 y V3
     let topic_v2: H256 = TOPIC_V2.parse().expect("Topic V2 inválido");
     let topic_v3: H256 = TOPIC_V3.parse().expect("Topic V3 inválido");
 
     let filtro_v2 = Filter::new().address(direcciones_v2).topic0(topic_v2);
-
     let filtro_v3 = Filter::new().address(direcciones_v3).topic0(topic_v3);
 
-    // Suscribirse a ambos streams
     let mut stream_v2 = proveedor
         .subscribe_logs(&filtro_v2)
         .await
         .expect("Error suscribiendo V2");
-
     let mut stream_v3 = proveedor
         .subscribe_logs(&filtro_v3)
         .await
         .expect("Error suscribiendo V3");
 
-    // Mapa de precios compartido
     let mut precios: HashMap<String, f64> = HashMap::new();
-
-    // Mapa de tokens preconfigurado — no necesitamos consultar la blockchain
     let mut tokens_por_pool: HashMap<String, (String, String)> = HashMap::new();
+
     for pool in POOLS_WPOL_USDT {
-        // WPOL / USDT
         tokens_por_pool.insert(
             pool.direccion.to_string(),
             (
-                "0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270".to_string(), // WPOL
-                "0xc2132d05d31c914a87c6611c10748aeb04b58e8f".to_string(), // USDT
+                "0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270".to_string(),
+                "0xc2132d05d31c914a87c6611c10748aeb04b58e8f".to_string(),
             ),
         );
     }
@@ -89,10 +80,10 @@ pub async fn iniciar(rpc_polygon: &str, wallet: &ethers::signers::LocalWallet, r
         tokio::select! {
             Some(log) = stream_v2.next() => {
                 let tipos = vec![
-                    ParamType::Uint(256), // amount0In
-                    ParamType::Uint(256), // amount1In
-                    ParamType::Uint(256), // amount0Out
-                    ParamType::Uint(256), // amount1Out
+                    ParamType::Uint(256),
+                    ParamType::Uint(256),
+                    ParamType::Uint(256),
+                    ParamType::Uint(256),
                 ];
 
                 if let Ok(datos) = decode(&tipos, &log.data) {
@@ -110,18 +101,18 @@ pub async fn iniciar(rpc_polygon: &str, wallet: &ethers::signers::LocalWallet, r
                         &pool[..10]);
 
                     if let Some((dif, pa, pb, precio)) = evaluar_arbitraje(&swap, &mut precios, &tokens_por_pool) {
-                        ejecutar_oportunidad(dif, pa, pb, precio, wallet, rpc_amoy).await;
+                        ejecutar_oportunidad(dif, pa, pb, precio, wallet, rpc_mainnet).await;
                     }
                 }
             }
 
             Some(log) = stream_v3.next() => {
                 let tipos = vec![
-                    ParamType::Int(256),  // amount0
-                    ParamType::Int(256),  // amount1
-                    ParamType::Uint(256), // sqrtPriceX96
-                    ParamType::Uint(256), // liquidity
-                    ParamType::Int(32),   // tick
+                    ParamType::Int(256),
+                    ParamType::Int(256),
+                    ParamType::Uint(256),
+                    ParamType::Uint(256),
+                    ParamType::Int(32),
                 ];
 
                 if let Ok(datos) = decode(&tipos, &log.data) {
@@ -144,7 +135,7 @@ pub async fn iniciar(rpc_polygon: &str, wallet: &ethers::signers::LocalWallet, r
                         &pool[..10]);
 
                     if let Some((dif, pa, pb, precio)) = evaluar_arbitraje(&swap, &mut precios, &tokens_por_pool) {
-                        ejecutar_oportunidad(dif, pa, pb, precio, wallet, rpc_amoy).await;
+                        ejecutar_oportunidad(dif, pa, pb, precio, wallet, rpc_mainnet).await;
                     }
                 }
             }
