@@ -107,6 +107,40 @@ pub async fn ejecutar_oportunidad(
                 diferencia, hash, hash
             );
             enviar_telegram(&token, &chat_id, &mensaje).await;
+
+            // Retirar ganancia automáticamente a la wallet
+            info!("💰 Retirando ganancia a wallet...");
+            let selector_retirar = &ethers::utils::keccak256("retirar(address)")[..4];
+            let usdt_addr: ethers::types::Address = "0xc2132D05D31c914a87C6611C10748AEb04B58e8F"
+                .parse()
+                .expect("USDT inválido");
+
+            let mut calldata_retirar = selector_retirar.to_vec();
+            calldata_retirar.extend_from_slice(&ethers::abi::encode(&[
+                ethers::abi::Token::Address(usdt_addr),
+            ]));
+
+            let tx_retirar = TransactionRequest::new()
+                .to(contrato_addr)
+                .data(calldata_retirar)
+                .value(U256::zero());
+
+            match cliente.send_transaction(tx_retirar, None).await {
+                Ok(tx_ret) => {
+                    let hash_ret = format!("{:?}", tx_ret.tx_hash());
+                    info!("✅ Ganancia retirada — hash: {}", hash_ret);
+                    enviar_telegram(
+                        &token,
+                        &chat_id,
+                        &format!(
+                            "💰 Ganancia enviada a tu wallet!\nhttps://polygonscan.com/tx/{}",
+                            hash_ret
+                        ),
+                    )
+                    .await;
+                }
+                Err(e) => info!("❌ Error retirando: {}", e),
+            }
         }
         Err(e) => {
             info!("❌ Error enviando: {}", e);
