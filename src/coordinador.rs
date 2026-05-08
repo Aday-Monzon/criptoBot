@@ -16,6 +16,19 @@ const CONTRATO_ARBITRAGE: &str = "0x99822a9C9A22DB1F3a7ABa5a996d04314435492f";
 // Monto a pedir prestado — 1000 WPOL
 const MONTO_ENTRADA: u128 = 1_000_000_000_000_000_000_000;
 
+pub async fn enviar_telegram(token: &str, chat_id: &str, mensaje: &str) {
+    let url = format!("https://api.telegram.org/bot{}/sendMessage", token);
+    let cliente = reqwest::Client::new();
+    let _ = cliente
+        .post(&url)
+        .json(&serde_json::json!({
+            "chat_id": chat_id,
+            "text": mensaje
+        }))
+        .send()
+        .await;
+}
+
 pub async fn ejecutar_oportunidad(
     diferencia: f64,
     pool_compra: String,
@@ -66,6 +79,15 @@ pub async fn ejecutar_oportunidad(
         Ok(_) => info!("✅ Simulación exitosa, enviando..."),
         Err(e) => {
             info!("❌ Simulación falló: {}", e);
+
+            // Notificar simulación fallida por Telegram
+            let token = std::env::var("TELEGRAM_TOKEN").unwrap_or_default();
+            let chat_id = std::env::var("TELEGRAM_CHAT_ID").unwrap_or_default();
+            let mensaje = format!(
+                "⚠️ Oportunidad detectada pero simulación falló\nDiferencia: {:.4}%\nError: {}",
+                diferencia, e
+            );
+            enviar_telegram(&token, &chat_id, &mensaje).await;
             return;
         }
     }
@@ -73,11 +95,18 @@ pub async fn ejecutar_oportunidad(
     info!("✍️  Firmando y enviando a Polygon mainnet...");
     match cliente.send_transaction(tx, None).await {
         Ok(tx_pendiente) => {
-            info!(
-                "✅ Transacción enviada — hash: {:?}",
-                tx_pendiente.tx_hash()
+            let hash = format!("{:?}", tx_pendiente.tx_hash());
+            info!("✅ Transacción enviada — hash: {}", hash);
+            info!("🔗 https://polygonscan.com/tx/{}", hash);
+
+            // Notificar éxito por Telegram
+            let token = std::env::var("TELEGRAM_TOKEN").unwrap_or_default();
+            let chat_id = std::env::var("TELEGRAM_CHAT_ID").unwrap_or_default();
+            let mensaje = format!(
+                "🚨 Arbitraje ejecutado!\nDiferencia: {:.4}%\nHash: {}\nhttps://polygonscan.com/tx/{}",
+                diferencia, hash, hash
             );
-            info!("🔗 https://polygonscan.com/tx/{:?}", tx_pendiente.tx_hash());
+            enviar_telegram(&token, &chat_id, &mensaje).await;
         }
         Err(e) => {
             info!("❌ Error enviando: {}", e);

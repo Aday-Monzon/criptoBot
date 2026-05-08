@@ -27,6 +27,11 @@ async fn main() {
     // Crear wallet
     let wallet = firmante::crear_wallet(clave_privada).await;
 
+    // Prueba de Telegram
+    let tg_token = std::env::var("TELEGRAM_TOKEN").unwrap_or_default();
+    let tg_chat = std::env::var("TELEGRAM_CHAT_ID").unwrap_or_default();
+    coordinador::enviar_telegram(&tg_token, &tg_chat, "🤖 CriptoBot iniciado correctamente").await;
+
     // Obtener URL de Polygon del archivo .env
     let rpc_polygon = env::var("RPC_POLYGON").expect("RPC_POLYGON no encontrado en .env");
 
