@@ -1,2 +1,4 @@
 /target
 .env
+criptoBot-contrato/cache/
+criptoBot-contrato/out/

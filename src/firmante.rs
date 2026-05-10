@@ -32,6 +32,7 @@ pub async fn crear_wallet(clave_privada: Option<String>) -> LocalWallet {
 }
 
 // Envía una transacción de prueba a Amoy testnet
+#[allow(dead_code)]
 pub async fn enviar_transaccion_prueba(wallet: &LocalWallet, rpc_amoy: &str) {
     info!("📤 Preparando transacción de prueba en Amoy...");
 
@@ -39,7 +40,7 @@ pub async fn enviar_transaccion_prueba(wallet: &LocalWallet, rpc_amoy: &str) {
     let proveedor = Provider::<Http>::try_from(rpc_amoy).expect("Error conectando a Amoy");
 
     // Configurar wallet con chain ID de Amoy (80002)
-    let wallet = wallet.clone().with_chain_id(137u64);
+    let wallet = wallet.clone().with_chain_id(80002u64);
 
     // Crear cliente firmante
     let cliente = Arc::new(SignerMiddleware::new(proveedor, wallet.clone()));
@@ -70,6 +71,7 @@ pub async fn enviar_transaccion_prueba(wallet: &LocalWallet, rpc_amoy: &str) {
 }
 
 // Verifica y aprueba el gasto de tokens al router
+#[allow(dead_code)]
 pub async fn aprobar_token(
     wallet: &LocalWallet,
     rpc_amoy: &str,
@@ -81,7 +83,7 @@ pub async fn aprobar_token(
 
     let proveedor = Provider::<Http>::try_from(rpc_amoy).expect("Error conectando");
 
-    let wallet_amoy = wallet.clone().with_chain_id(137u64);
+    let wallet_amoy = wallet.clone().with_chain_id(80002u64);
     let cliente = Arc::new(SignerMiddleware::new(proveedor, wallet_amoy.clone()));
 
     let token_addr: ethers::types::Address = token.parse().expect("Token inválido");

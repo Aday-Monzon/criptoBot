@@ -1,4 +1,4 @@
-use crate::coordinador::ejecutar_oportunidad;
+use crate::coordinador::{ejecutar_oportunidad, ejecutar_oportunidad_v3};
 use crate::evaluador::{DatosSwap, evaluar_arbitraje};
 use crate::pools::POOLS_WPOL_USDT;
 use ethers::{
@@ -13,6 +13,38 @@ use tracing::info;
 
 const TOPIC_V2: &str = "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822";
 const TOPIC_V3: &str = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67";
+
+fn es_pool_v2(pool: &str) -> bool {
+    POOLS_WPOL_USDT
+        .iter()
+        .any(|p| p.version == 2 && p.direccion.eq_ignore_ascii_case(pool))
+}
+
+fn es_pool_uniswap_v3(pool: &str) -> bool {
+    POOLS_WPOL_USDT
+        .iter()
+        .any(|p| p.version == 3 && p.dex == "Uniswap V3" && p.direccion.eq_ignore_ascii_case(pool))
+}
+
+async fn coordinar_oportunidad(
+    dif: f64,
+    pa: String,
+    pb: String,
+    precio: f64,
+    wallet: &ethers::signers::LocalWallet,
+    rpc_mainnet: &str,
+) {
+    if es_pool_v2(&pa) && es_pool_v2(&pb) {
+        ejecutar_oportunidad(dif, pa, pb, precio, wallet, rpc_mainnet).await;
+    } else if es_pool_uniswap_v3(&pa) && es_pool_uniswap_v3(&pb) {
+        ejecutar_oportunidad_v3(dif, pa, pb, precio, wallet, rpc_mainnet).await;
+    } else {
+        info!(
+            "Oportunidad monitorizada sin ejecutar: combinacion no soportada todavia. Compra: {} Venta: {}",
+            pa, pb
+        );
+    }
+}
 
 pub async fn iniciar(rpc_polygon: &str, wallet: &ethers::signers::LocalWallet, rpc_mainnet: &str) {
     info!("📡 Conectando detector a Polygon...");
@@ -101,7 +133,7 @@ pub async fn iniciar(rpc_polygon: &str, wallet: &ethers::signers::LocalWallet, r
                         &pool[..10]);
 
                     if let Some((dif, pa, pb, precio)) = evaluar_arbitraje(&swap, &mut precios, &tokens_por_pool) {
-                        ejecutar_oportunidad(dif, pa, pb, precio, wallet, rpc_mainnet).await;
+                        coordinar_oportunidad(dif, pa, pb, precio, wallet, rpc_mainnet).await;
                     }
                 }
             }
@@ -135,7 +167,7 @@ pub async fn iniciar(rpc_polygon: &str, wallet: &ethers::signers::LocalWallet, r
                         &pool[..10]);
 
                     if let Some((dif, pa, pb, precio)) = evaluar_arbitraje(&swap, &mut precios, &tokens_por_pool) {
-                        ejecutar_oportunidad(dif, pa, pb, precio, wallet, rpc_mainnet).await;
+                        coordinar_oportunidad(dif, pa, pb, precio, wallet, rpc_mainnet).await;
                     }
                 }
             }
