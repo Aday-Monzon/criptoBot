@@ -97,8 +97,8 @@ pub async fn iniciar(rpc_polygon: &str, wallet: &ethers::signers::LocalWallet, r
         tokens_por_pool.insert(
             pool.direccion.to_string(),
             (
-                "0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270".to_string(),
-                "0xc2132d05d31c914a87c6611c10748aeb04b58e8f".to_string(),
+                pool.token_base.to_lowercase(),
+                pool.token_cotizacion.to_lowercase(),
             ),
         );
     }

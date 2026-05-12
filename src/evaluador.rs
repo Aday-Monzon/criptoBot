@@ -9,9 +9,17 @@ pub struct DatosSwap {
     pub amount1_out: u128,
 }
 
-const UMBRAL_PORCENTAJE: f64 = 0.8;
+const UMBRAL_PORCENTAJE_DEFECTO: f64 = 0.8;
 const DECIMALES_WPOL: f64 = 1e18;
 const DECIMALES_USDT: f64 = 1e6;
+
+fn umbral_porcentaje() -> f64 {
+    std::env::var("UMBRAL_PORCENTAJE")
+        .ok()
+        .and_then(|valor| valor.trim().replace(',', ".").parse::<f64>().ok())
+        .filter(|valor| *valor > 0.0)
+        .unwrap_or(UMBRAL_PORCENTAJE_DEFECTO)
+}
 
 // Precio observado en USDT por WPOL, normalizando decimales de ambos tokens.
 pub fn calcular_precio(swap: &DatosSwap) -> Option<f64> {
@@ -65,7 +73,9 @@ pub fn evaluar_arbitraje(
             swap.pool, pool_guardado, diferencia
         );
 
-        if diferencia >= UMBRAL_PORCENTAJE {
+        let umbral = umbral_porcentaje();
+
+        if diferencia >= umbral {
             let (pool_compra, pool_venta) = if precio_actual < *precio_guardado {
                 (swap.pool.clone(), pool_guardado.clone())
             } else {
@@ -78,6 +88,11 @@ pub fn evaluar_arbitraje(
             );
 
             return Some((diferencia, pool_compra, pool_venta, precio_actual));
+        } else {
+            info!(
+                "Diferencia sin oportunidad: {:.6}% < umbral {:.6}%",
+                diferencia, umbral
+            );
         }
     }
 

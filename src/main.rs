@@ -33,7 +33,10 @@ async fn main() {
     // Obtener URL de Polygon del archivo .env
     let rpc_polygon = env::var("RPC_POLYGON").expect("RPC_POLYGON no encontrado en .env");
 
-    // Iniciar el detector
+    // Iniciar detector por eventos y escaner periodico por reservas
     let rpc_amoy = env::var("RPC_MAINNET").expect("RPC_MAINNET no encontrado en .env");
-    detector::iniciar(&rpc_polygon, &wallet, &rpc_amoy).await;
+    tokio::join!(
+        detector::iniciar(&rpc_polygon, &wallet, &rpc_amoy),
+        coordinador::iniciar_escaner_v2(&rpc_amoy, &wallet)
+    );
 }

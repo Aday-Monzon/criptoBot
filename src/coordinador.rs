@@ -1,24 +1,54 @@
+use crate::pools::{POOLS_WPOL_USDT, TOKEN_USDT, TOKEN_WPOL};
 use ethers::{
     middleware::SignerMiddleware,
     providers::{Http, Middleware, Provider},
     signers::{LocalWallet, Signer},
     types::{Address, TransactionRequest, U256},
 };
-use std::sync::Arc;
+use futures_util::future::join_all;
+use std::{collections::HashMap, sync::Arc, time::Duration};
+use tokio::time;
 use tracing::info;
 
-const TOKEN_WPOL: &str = "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270";
-const TOKEN_USDT: &str = "0xc2132D05D31c914a87C6611C10748AEb04B58e8F";
-
 const UMBRAL_AVISO_USDT: u64 = 10_000_000;
-const MIN_PROFIT_USDT: u64 = 1_000_000;
-const PORCENTAJE_MONTO: u128 = 100;
+const MIN_PROFIT_USDT_DEFECTO: u64 = 5_000_000;
+const MULTIPLICADOR_MARGEN_LOCAL_DEFECTO: u64 = 2;
+const ESCANER_V2_SEGUNDOS_DEFECTO: u64 = 5;
+const ESCANER_V2_COOLDOWN_SEGUNDOS_DEFECTO: u64 = 60;
+const GAS_ARBITRAJE_V2_DEFECTO: u64 = 550_000;
 
 struct ReservasPool {
     token0: Address,
     token1: Address,
     reserve0: U256,
     reserve1: U256,
+}
+
+struct ResultadoArbitrajeV2 {
+    monto_prestamo: U256,
+    deuda_usdt: U256,
+    salida_usdt: U256,
+    beneficio_usdt: U256,
+}
+
+struct CandidatoArbitrajeV2 {
+    par: String,
+    pool_compra: String,
+    pool_venta: String,
+    token_base: Address,
+    token_cotizacion: Address,
+    simbolo_base: String,
+    simbolo_cotizacion: String,
+    diferencia: f64,
+    precio_compra: f64,
+    precio_venta: f64,
+    resultado: ResultadoArbitrajeV2,
+}
+
+struct EvaluacionGas {
+    gas_limit: U256,
+    gas_price: U256,
+    coste_usdt: f64,
 }
 
 pub async fn enviar_telegram(token: &str, chat_id: &str, mensaje: &str) {
@@ -92,37 +122,243 @@ fn reserva_de_token(reservas: &ReservasPool, token: Address) -> Option<U256> {
     }
 }
 
-fn contiene_par_wpol_usdt(reservas: &ReservasPool, wpol: Address, usdt: Address) -> bool {
-    (reservas.token0 == wpol && reservas.token1 == usdt)
-        || (reservas.token0 == usdt && reservas.token1 == wpol)
+fn contiene_par_tokens(reservas: &ReservasPool, token_a: Address, token_b: Address) -> bool {
+    (reservas.token0 == token_a && reservas.token1 == token_b)
+        || (reservas.token0 == token_b && reservas.token1 == token_a)
 }
 
-fn calcular_monto(reserva_compra_wpol: U256, reserva_venta_wpol: U256) -> U256 {
+fn reservas_ordenadas(
+    reservas: &ReservasPool,
+    token_in: Address,
+    token_out: Address,
+) -> Option<(U256, U256)> {
+    if reservas.token0 == token_in && reservas.token1 == token_out {
+        Some((reservas.reserve0, reservas.reserve1))
+    } else if reservas.token1 == token_in && reservas.token0 == token_out {
+        Some((reservas.reserve1, reservas.reserve0))
+    } else {
+        None
+    }
+}
+
+fn get_amount_out(amount_in: U256, reserve_in: U256, reserve_out: U256) -> Option<U256> {
+    if amount_in.is_zero() || reserve_in.is_zero() || reserve_out.is_zero() {
+        return None;
+    }
+
+    let amount_in_with_fee = amount_in * U256::from(997u64);
+    let numerator = amount_in_with_fee * reserve_out;
+    let denominator = reserve_in * U256::from(1000u64) + amount_in_with_fee;
+
+    if denominator.is_zero() {
+        None
+    } else {
+        Some(numerator / denominator)
+    }
+}
+
+fn get_amount_in(amount_out: U256, reserve_in: U256, reserve_out: U256) -> Option<U256> {
+    if amount_out.is_zero() || reserve_in.is_zero() || reserve_out <= amount_out {
+        return None;
+    }
+
+    let numerator = reserve_in * amount_out * U256::from(1000u64);
+    let denominator = (reserve_out - amount_out) * U256::from(997u64);
+
+    if denominator.is_zero() {
+        None
+    } else {
+        Some(numerator / denominator + U256::one())
+    }
+}
+
+fn simular_arbitraje_v2(
+    monto_prestamo: U256,
+    reservas_compra: &ReservasPool,
+    reservas_venta: &ReservasPool,
+    wpol: Address,
+    usdt: Address,
+) -> Option<ResultadoArbitrajeV2> {
+    let (reserva_deuda_usdt, reserva_prestamo_wpol) =
+        reservas_ordenadas(reservas_compra, usdt, wpol)?;
+    let (reserva_venta_wpol, reserva_salida_usdt) = reservas_ordenadas(reservas_venta, wpol, usdt)?;
+
+    let deuda_usdt = get_amount_in(monto_prestamo, reserva_deuda_usdt, reserva_prestamo_wpol)?;
+    let salida_usdt = get_amount_out(monto_prestamo, reserva_venta_wpol, reserva_salida_usdt)?;
+    let beneficio_usdt = salida_usdt.checked_sub(deuda_usdt)?;
+
+    Some(ResultadoArbitrajeV2 {
+        monto_prestamo,
+        deuda_usdt,
+        salida_usdt,
+        beneficio_usdt,
+    })
+}
+
+fn calcular_mejor_monto_v2(
+    reservas_compra: &ReservasPool,
+    reservas_venta: &ReservasPool,
+    wpol: Address,
+    usdt: Address,
+    min_profit: U256,
+) -> Option<ResultadoArbitrajeV2> {
+    let reserva_compra_wpol = reserva_de_token(reservas_compra, wpol)?;
+    let reserva_venta_wpol = reserva_de_token(reservas_venta, wpol)?;
     let reserva_minima = reserva_compra_wpol.min(reserva_venta_wpol);
-    let monto = reserva_minima / U256::from(PORCENTAJE_MONTO);
 
-    let minimo = U256::from(10u128) * U256::from(10u128).pow(U256::from(18u32));
+    let unidad_wpol = U256::from(10u128).pow(U256::from(18u32));
+    let minimo = unidad_wpol;
     let maximo = U256::from(5_000u128) * U256::from(10u128).pow(U256::from(18u32));
+    let limite = maximo.min(reserva_minima / U256::from(20u64));
 
-    monto.max(minimo).min(maximo)
+    if limite < minimo {
+        return None;
+    }
+
+    let mut mejor: Option<ResultadoArbitrajeV2> = None;
+    let pasos = U256::from(80u64);
+    let incremento = (limite - minimo) / pasos;
+
+    for i in 0..=80u64 {
+        let monto = if i == 80 {
+            limite
+        } else {
+            minimo + incremento * U256::from(i)
+        };
+
+        let Some(resultado) =
+            simular_arbitraje_v2(monto, reservas_compra, reservas_venta, wpol, usdt)
+        else {
+            continue;
+        };
+
+        if resultado.beneficio_usdt <= min_profit {
+            continue;
+        }
+
+        if mejor.as_ref().map_or(true, |actual| {
+            resultado.beneficio_usdt > actual.beneficio_usdt
+        }) {
+            mejor = Some(resultado);
+        }
+    }
+
+    mejor
 }
 
-async fn saldo_usdt_en_contrato(
+fn min_profit_usdt() -> U256 {
+    parse_usdt_env("MIN_PROFIT_USDT").unwrap_or_else(|| U256::from(MIN_PROFIT_USDT_DEFECTO))
+}
+
+fn multiplicador_margen_local() -> u64 {
+    std::env::var("MULTIPLICADOR_MARGEN_LOCAL")
+        .ok()
+        .and_then(|valor| valor.trim().parse::<u64>().ok())
+        .filter(|valor| *valor > 0)
+        .unwrap_or(MULTIPLICADOR_MARGEN_LOCAL_DEFECTO)
+}
+
+fn usdt_legible(valor: U256) -> f64 {
+    valor.as_u128() as f64 / 1_000_000.0
+}
+
+fn wpol_legible(valor: U256) -> f64 {
+    valor.as_u128() as f64 / 1e18
+}
+
+fn env_u64(nombre: &str, defecto: u64) -> u64 {
+    std::env::var(nombre)
+        .ok()
+        .and_then(|valor| valor.trim().parse::<u64>().ok())
+        .filter(|valor| *valor > 0)
+        .unwrap_or(defecto)
+}
+
+fn env_bool(nombre: &str, defecto: bool) -> bool {
+    std::env::var(nombre)
+        .ok()
+        .map(|valor| {
+            matches!(
+                valor.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "si" | "sí" | "yes" | "on"
+            )
+        })
+        .unwrap_or(defecto)
+}
+
+fn precio_base_cotizacion(
+    reservas: &ReservasPool,
+    token_base: Address,
+    token_cotizacion: Address,
+) -> Option<f64> {
+    let reserva_base = wpol_legible(reserva_de_token(reservas, token_base)?);
+    let reserva_cotizacion = usdt_legible(reserva_de_token(reservas, token_cotizacion)?);
+
+    if reserva_base <= 0.0 || reserva_cotizacion <= 0.0 {
+        None
+    } else {
+        Some(reserva_cotizacion / reserva_base)
+    }
+}
+
+fn calcular_diferencia_porcentaje(precio_a: f64, precio_b: f64) -> f64 {
+    if precio_a <= 0.0 || precio_b <= 0.0 {
+        0.0
+    } else {
+        ((precio_a - precio_b) / precio_b).abs() * 100.0
+    }
+}
+
+fn contrato_arbitrage_env() -> Option<String> {
+    std::env::var("CONTRATO_ARBITRAGE")
+        .ok()
+        .map(|valor| valor.trim().to_string())
+        .filter(|valor| !valor.is_empty())
+}
+
+fn construir_tx_arbitraje_v2(
+    contrato_addr: Address,
+    wallet_addr: Address,
+    pool_compra: Address,
+    pool_venta: Address,
+    wpol_addr: Address,
+    usdt_addr: Address,
+    monto_entrada: U256,
+    min_profit: U256,
+) -> TransactionRequest {
+    let selector = &ethers::utils::keccak256(
+        "ejecutarArbitraje(address,address,address,address,uint256,uint256)",
+    )[..4];
+
+    let mut calldata = selector.to_vec();
+    calldata.extend_from_slice(&ethers::abi::encode(&[
+        ethers::abi::Token::Address(pool_compra),
+        ethers::abi::Token::Address(pool_venta),
+        ethers::abi::Token::Address(wpol_addr),
+        ethers::abi::Token::Address(usdt_addr),
+        ethers::abi::Token::Uint(monto_entrada),
+        ethers::abi::Token::Uint(min_profit),
+    ]));
+
+    TransactionRequest::new()
+        .to(contrato_addr)
+        .from(wallet_addr)
+        .data(calldata)
+        .value(U256::zero())
+}
+
+async fn saldo_token_en_contrato(
     cliente: &Arc<SignerMiddleware<Provider<Http>, LocalWallet>>,
+    token_addr: Address,
     contrato_addr: Address,
 ) -> U256 {
-    let usdt_addr: Address = match TOKEN_USDT.parse() {
-        Ok(a) => a,
-        Err(_) => return U256::zero(),
-    };
-
     let selector = &ethers::utils::keccak256("balanceOf(address)")[..4];
     let mut calldata = selector.to_vec();
     calldata.extend_from_slice(&ethers::abi::encode(&[ethers::abi::Token::Address(
         contrato_addr,
     )]));
 
-    let tx = TransactionRequest::new().to(usdt_addr).data(calldata);
+    let tx = TransactionRequest::new().to(token_addr).data(calldata);
 
     match cliente.call(&tx.into(), None).await {
         Ok(bytes) if bytes.len() >= 32 => U256::from_big_endian(&bytes[..32]),
@@ -130,24 +366,487 @@ async fn saldo_usdt_en_contrato(
     }
 }
 
+async fn estimar_gas_arbitraje_v2(
+    cliente: &Arc<SignerMiddleware<Provider<Http>, LocalWallet>>,
+    tx: &TransactionRequest,
+    precio_usdt_wpol: f64,
+) -> EvaluacionGas {
+    let gas_limit = match cliente.estimate_gas(&tx.clone().into(), None).await {
+        Ok(gas) => gas,
+        Err(e) => {
+            info!(
+                "No se pudo estimar gas con simulacion completa, usando gas por defecto: {}",
+                e
+            );
+            U256::from(env_u64("GAS_ARBITRAJE_V2", GAS_ARBITRAJE_V2_DEFECTO))
+        }
+    };
+
+    let gas_price = match cliente.get_gas_price().await {
+        Ok(precio) => precio,
+        Err(e) => {
+            info!("No se pudo consultar gas price, usando 100 gwei: {}", e);
+            U256::from(100_000_000_000u64)
+        }
+    };
+
+    let coste_pol = gas_limit.as_u128() as f64 * gas_price.as_u128() as f64 / 1e18;
+    let coste_usdt = coste_pol * precio_usdt_wpol;
+
+    EvaluacionGas {
+        gas_limit,
+        gas_price,
+        coste_usdt,
+    }
+}
+
+async fn leer_reservas_v2_en_paralelo(
+    cliente: &Arc<SignerMiddleware<Provider<Http>, LocalWallet>>,
+) -> HashMap<String, ReservasPool> {
+    let pools_v2: Vec<_> = POOLS_WPOL_USDT
+        .iter()
+        .filter(|pool| pool.version == 2)
+        .collect();
+
+    let lecturas = pools_v2.iter().map(|pool| async move {
+        let token_base = match pool.token_base.parse::<Address>() {
+            Ok(addr) => addr,
+            Err(e) => {
+                info!(
+                    "Escaner V2 ignora pool con token base invalido {}: {}",
+                    pool.direccion, e
+                );
+                return None;
+            }
+        };
+        let token_cotizacion = match pool.token_cotizacion.parse::<Address>() {
+            Ok(addr) => addr,
+            Err(e) => {
+                info!(
+                    "Escaner V2 ignora pool con token cotizacion invalido {}: {}",
+                    pool.direccion, e
+                );
+                return None;
+            }
+        };
+
+        match consultar_reservas(cliente, pool.direccion).await {
+            Some(reservas) if contiene_par_tokens(&reservas, token_base, token_cotizacion) => {
+                Some((pool.direccion.to_string(), reservas))
+            }
+            Some(_) => {
+                info!(
+                    "Escaner V2 ignora pool sin par esperado {}: {}",
+                    pool.par, pool.direccion
+                );
+                None
+            }
+            None => {
+                info!("Escaner V2 no pudo leer reservas: {}", pool.direccion);
+                None
+            }
+        }
+    });
+
+    join_all(lecturas).await.into_iter().flatten().collect()
+}
+
+async fn ejecutar_candidato_v2_calculado(
+    cliente: &Arc<SignerMiddleware<Provider<Http>, LocalWallet>>,
+    contrato_addr: Address,
+    wallet_addr: Address,
+    candidato: CandidatoArbitrajeV2,
+    min_profit: U256,
+    token_tg: &str,
+    chat_id: &str,
+) {
+    let pool_compra_addr: Address = match candidato.pool_compra.parse() {
+        Ok(addr) => addr,
+        Err(e) => {
+            info!("Pool compra invalido en candidato V2: {}", e);
+            return;
+        }
+    };
+    let pool_venta_addr: Address = match candidato.pool_venta.parse() {
+        Ok(addr) => addr,
+        Err(e) => {
+            info!("Pool venta invalido en candidato V2: {}", e);
+            return;
+        }
+    };
+
+    let monto_base = wpol_legible(candidato.resultado.monto_prestamo);
+    let tx = construir_tx_arbitraje_v2(
+        contrato_addr,
+        wallet_addr,
+        pool_compra_addr,
+        pool_venta_addr,
+        candidato.token_base,
+        candidato.token_cotizacion,
+        candidato.resultado.monto_prestamo,
+        min_profit,
+    );
+
+    info!(
+        "Simulacion final rapida V2 {} con {:.4} {}...",
+        candidato.par, monto_base, candidato.simbolo_base
+    );
+
+    match cliente.call(&tx.clone().into(), None).await {
+        Ok(_) => info!("Simulacion final exitosa, enviando transaccion real..."),
+        Err(e) => {
+            info!("Simulacion final fallida: {}", e);
+            enviar_telegram(
+                token_tg,
+                chat_id,
+                &format!(
+                    "Candidato V2 descartado en simulacion final {}\nDif: {:.4}%\nMonto: {:.4} {}\nError: {}",
+                    candidato.par, candidato.diferencia, monto_base, candidato.simbolo_base, e
+                ),
+            )
+            .await;
+            return;
+        }
+    }
+
+    match cliente.send_transaction(tx, None).await {
+        Ok(tx_pendiente) => {
+            let hash = format!("{:?}", tx_pendiente.tx_hash());
+            info!("Transaccion V2 enviada - hash: {}", hash);
+            enviar_telegram(
+                token_tg,
+                chat_id,
+                &format!(
+                    "Arbitraje V2 enviado {}\nDiferencia: {:.4}%\nMonto: {:.4} {}\nHash: {}\nhttps://polygonscan.com/tx/{}",
+                    candidato.par, candidato.diferencia, monto_base, candidato.simbolo_base, hash, hash
+                ),
+            )
+            .await;
+        }
+        Err(e) => info!("Error enviando transaccion V2: {}", e),
+    }
+}
+
+fn mejor_candidato_v2(
+    reservas: &HashMap<String, ReservasPool>,
+    min_profit_local: U256,
+) -> Option<CandidatoArbitrajeV2> {
+    let mut mejor: Option<CandidatoArbitrajeV2> = None;
+    let pools_v2: Vec<_> = POOLS_WPOL_USDT
+        .iter()
+        .filter(|pool| pool.version == 2)
+        .collect();
+
+    for (i, pool_a) in pools_v2.iter().enumerate() {
+        for pool_b in pools_v2.iter().skip(i + 1) {
+            if pool_a.par != pool_b.par {
+                continue;
+            }
+
+            let Ok(token_base) = pool_a.token_base.parse::<Address>() else {
+                continue;
+            };
+            let Ok(token_cotizacion) = pool_a.token_cotizacion.parse::<Address>() else {
+                continue;
+            };
+
+            let Some(reservas_a) = reservas.get(pool_a.direccion) else {
+                continue;
+            };
+            let Some(reservas_b) = reservas.get(pool_b.direccion) else {
+                continue;
+            };
+
+            let Some(precio_a) = precio_base_cotizacion(reservas_a, token_base, token_cotizacion)
+            else {
+                continue;
+            };
+            let Some(precio_b) = precio_base_cotizacion(reservas_b, token_base, token_cotizacion)
+            else {
+                continue;
+            };
+
+            let (
+                pool_compra,
+                pool_venta,
+                reservas_compra,
+                reservas_venta,
+                precio_compra,
+                precio_venta,
+            ) = if precio_a < precio_b {
+                (
+                    pool_a.direccion,
+                    pool_b.direccion,
+                    reservas_a,
+                    reservas_b,
+                    precio_a,
+                    precio_b,
+                )
+            } else {
+                (
+                    pool_b.direccion,
+                    pool_a.direccion,
+                    reservas_b,
+                    reservas_a,
+                    precio_b,
+                    precio_a,
+                )
+            };
+
+            let diferencia = calcular_diferencia_porcentaje(precio_compra, precio_venta);
+            let Some(resultado) = calcular_mejor_monto_v2(
+                reservas_compra,
+                reservas_venta,
+                token_base,
+                token_cotizacion,
+                min_profit_local,
+            ) else {
+                info!(
+                    "Escaner V2 descarta {} {} -> {}: dif {:.4}% sin beneficio bruto mayor a {:.6} {}",
+                    pool_a.par,
+                    pool_compra,
+                    pool_venta,
+                    diferencia,
+                    usdt_legible(min_profit_local),
+                    pool_a.simbolo_cotizacion
+                );
+                continue;
+            };
+
+            if mejor.as_ref().map_or(true, |actual| {
+                resultado.beneficio_usdt > actual.resultado.beneficio_usdt
+            }) {
+                mejor = Some(CandidatoArbitrajeV2 {
+                    par: pool_a.par.to_string(),
+                    pool_compra: pool_compra.to_string(),
+                    pool_venta: pool_venta.to_string(),
+                    token_base,
+                    token_cotizacion,
+                    simbolo_base: pool_a.simbolo_base.to_string(),
+                    simbolo_cotizacion: pool_a.simbolo_cotizacion.to_string(),
+                    diferencia,
+                    precio_compra,
+                    precio_venta,
+                    resultado,
+                });
+            }
+        }
+    }
+
+    mejor
+}
+
+pub async fn iniciar_escaner_v2(rpc_mainnet: &str, wallet: &LocalWallet) {
+    if !env_bool("ESCANER_V2_ACTIVO", true) {
+        info!("Escaner V2 desactivado por ESCANER_V2_ACTIVO=false");
+        return;
+    }
+
+    let token_tg = std::env::var("TELEGRAM_TOKEN").unwrap_or_default();
+    let chat_id = std::env::var("TELEGRAM_CHAT_ID").unwrap_or_default();
+    let ejecutar = env_bool("ESCANER_V2_EJECUTAR", true);
+    let intervalo = env_u64("ESCANER_V2_SEGUNDOS", ESCANER_V2_SEGUNDOS_DEFECTO);
+    let cooldown = env_u64(
+        "ESCANER_V2_COOLDOWN_SEGUNDOS",
+        ESCANER_V2_COOLDOWN_SEGUNDOS_DEFECTO,
+    );
+
+    let contrato_arbitrage = match contrato_arbitrage_env() {
+        Some(valor) => valor,
+        None => {
+            info!("Escaner V2 activo solo en modo observacion: falta CONTRATO_ARBITRAGE");
+            String::new()
+        }
+    };
+
+    let proveedor = Provider::<Http>::try_from(rpc_mainnet).expect("Error conectando a Polygon");
+    let wallet_mainnet = wallet.clone().with_chain_id(137u64);
+    let cliente = Arc::new(SignerMiddleware::new(proveedor, wallet_mainnet));
+
+    let min_profit = min_profit_usdt();
+    let min_profit_local = min_profit * U256::from(multiplicador_margen_local());
+    let min_neto = parse_usdt_env("MIN_PROFIT_NETO_USDT").unwrap_or(min_profit);
+    let mut ultimo_envio: HashMap<String, std::time::Instant> = HashMap::new();
+    let pools_v2_count = POOLS_WPOL_USDT
+        .iter()
+        .filter(|pool| pool.version == 2)
+        .count();
+
+    info!(
+        "Escaner V2 activo: {} pools, cada {}s, ejecucion={}, margen bruto {:.2} USDT, neto minimo {:.2} USDT",
+        pools_v2_count,
+        intervalo,
+        ejecutar,
+        usdt_legible(min_profit_local),
+        usdt_legible(min_neto)
+    );
+
+    loop {
+        let reservas = leer_reservas_v2_en_paralelo(&cliente).await;
+
+        if let Some(candidato) = mejor_candidato_v2(&reservas, min_profit_local) {
+            let beneficio_bruto = usdt_legible(candidato.resultado.beneficio_usdt);
+            let monto_wpol = wpol_legible(candidato.resultado.monto_prestamo);
+            let clave = format!("{}:{}", candidato.pool_compra, candidato.pool_venta);
+            let en_cooldown = ultimo_envio
+                .get(&clave)
+                .is_some_and(|ultimo| ultimo.elapsed() < Duration::from_secs(cooldown));
+
+            info!(
+                "Escaner V2 candidato {}: dif {:.4}% precio compra {:.6} venta {:.6} monto {:.4} {} bruto {:.6} {} compra {} venta {}",
+                candidato.par,
+                candidato.diferencia,
+                candidato.precio_compra,
+                candidato.precio_venta,
+                monto_wpol,
+                beneficio_bruto,
+                candidato.simbolo_base,
+                candidato.simbolo_cotizacion,
+                candidato.pool_compra,
+                candidato.pool_venta
+            );
+
+            if !contrato_arbitrage.is_empty() {
+                let contrato_addr: Address = match contrato_arbitrage.parse() {
+                    Ok(addr) => addr,
+                    Err(e) => {
+                        info!("CONTRATO_ARBITRAGE invalido para escaner V2: {}", e);
+                        time::sleep(Duration::from_secs(intervalo)).await;
+                        continue;
+                    }
+                };
+                let pool_compra_addr: Address = match candidato.pool_compra.parse() {
+                    Ok(addr) => addr,
+                    Err(_) => {
+                        time::sleep(Duration::from_secs(intervalo)).await;
+                        continue;
+                    }
+                };
+                let pool_venta_addr: Address = match candidato.pool_venta.parse() {
+                    Ok(addr) => addr,
+                    Err(_) => {
+                        time::sleep(Duration::from_secs(intervalo)).await;
+                        continue;
+                    }
+                };
+                let tx = construir_tx_arbitraje_v2(
+                    contrato_addr,
+                    wallet.address(),
+                    pool_compra_addr,
+                    pool_venta_addr,
+                    candidato.token_base,
+                    candidato.token_cotizacion,
+                    candidato.resultado.monto_prestamo,
+                    min_profit,
+                );
+                let gas = estimar_gas_arbitraje_v2(&cliente, &tx, candidato.precio_compra).await;
+                let neto = beneficio_bruto - gas.coste_usdt;
+
+                info!(
+                    "Escaner V2 neto: bruto {:.6} USDT - gas {:.6} USDT (limit {}, price {} wei) = {:.6} USDT",
+                    beneficio_bruto, gas.coste_usdt, gas.gas_limit, gas.gas_price, neto
+                );
+
+                if neto <= usdt_legible(min_neto) {
+                    info!(
+                        "Escaner V2 descarta por neto insuficiente: {:.6} <= {:.6} USDT",
+                        neto,
+                        usdt_legible(min_neto)
+                    );
+                } else if en_cooldown {
+                    info!(
+                        "Escaner V2 candidato en cooldown {}s para {}",
+                        cooldown, clave
+                    );
+                } else if ejecutar {
+                    ultimo_envio.insert(clave, std::time::Instant::now());
+                    enviar_telegram(
+                        &token_tg,
+                        &chat_id,
+                        &format!(
+                            "Escaner V2 va a ejecutar {}\nDif: {:.4}%\nBruto: {:.6} {}\nGas est.: {:.6} {}\nNeto: {:.6} {}\nMonto: {:.4} {}",
+                            candidato.par,
+                            candidato.diferencia,
+                            beneficio_bruto,
+                            candidato.simbolo_cotizacion,
+                            gas.coste_usdt,
+                            candidato.simbolo_cotizacion,
+                            neto,
+                            candidato.simbolo_cotizacion,
+                            monto_wpol,
+                            candidato.simbolo_base
+                        ),
+                    )
+                    .await;
+                    ejecutar_candidato_v2_calculado(
+                        &cliente,
+                        contrato_addr,
+                        wallet.address(),
+                        candidato,
+                        min_profit,
+                        &token_tg,
+                        &chat_id,
+                    )
+                    .await;
+                } else {
+                    info!("Escaner V2 no ejecuta porque ESCANER_V2_EJECUTAR=false");
+                }
+            }
+        } else {
+            info!("Escaner V2: sin candidatos rentables en esta vuelta");
+        }
+
+        time::sleep(Duration::from_secs(intervalo)).await;
+    }
+}
+
 pub async fn ejecutar_oportunidad(
     diferencia: f64,
     pool_compra: String,
     pool_venta: String,
+    precio: f64,
+    wallet: &LocalWallet,
+    rpc_mainnet: &str,
+) {
+    let wpol_addr: Address = TOKEN_WPOL.parse().expect("WPOL invalido");
+    let usdt_addr: Address = TOKEN_USDT.parse().expect("USDT invalido");
+    ejecutar_oportunidad_v2_tokens(
+        diferencia,
+        pool_compra,
+        pool_venta,
+        precio,
+        wpol_addr,
+        usdt_addr,
+        "WPOL",
+        "USDT",
+        wallet,
+        rpc_mainnet,
+    )
+    .await;
+}
+
+pub async fn ejecutar_oportunidad_v2_tokens(
+    diferencia: f64,
+    pool_compra: String,
+    pool_venta: String,
     _precio: f64,
+    token_base: Address,
+    token_cotizacion: Address,
+    simbolo_base: &str,
+    simbolo_cotizacion: &str,
     wallet: &LocalWallet,
     rpc_mainnet: &str,
 ) {
     info!(
-        "Coordinador activado - diferencia: {:.4}% - preparando arbitraje V2...",
-        diferencia
+        "Coordinador activado - diferencia: {:.4}% - preparando arbitraje V2 {}...",
+        diferencia, simbolo_cotizacion
     );
 
     let token_tg = std::env::var("TELEGRAM_TOKEN").unwrap_or_default();
     let chat_id = std::env::var("TELEGRAM_CHAT_ID").unwrap_or_default();
-    let contrato_arbitrage = match std::env::var("CONTRATO_ARBITRAGE") {
-        Ok(valor) if !valor.is_empty() => valor,
-        _ => {
+    let contrato_arbitrage = match contrato_arbitrage_env() {
+        Some(valor) => valor,
+        None => {
             info!("CONTRATO_ARBITRAGE no configurado, abortando ejecucion");
             enviar_telegram(
                 &token_tg,
@@ -163,8 +862,6 @@ pub async fn ejecutar_oportunidad(
     let wallet_mainnet = wallet.clone().with_chain_id(137u64);
     let cliente = Arc::new(SignerMiddleware::new(proveedor, wallet_mainnet));
 
-    let wpol_addr: Address = TOKEN_WPOL.parse().expect("WPOL invalido");
-    let usdt_addr: Address = TOKEN_USDT.parse().expect("USDT invalido");
     let contrato_addr: Address = contrato_arbitrage
         .parse()
         .expect("CONTRATO_ARBITRAGE invalido");
@@ -187,56 +884,76 @@ pub async fn ejecutar_oportunidad(
         }
     };
 
-    if !contiene_par_wpol_usdt(&reservas_compra, wpol_addr, usdt_addr)
-        || !contiene_par_wpol_usdt(&reservas_venta, wpol_addr, usdt_addr)
+    if !contiene_par_tokens(&reservas_compra, token_base, token_cotizacion)
+        || !contiene_par_tokens(&reservas_venta, token_base, token_cotizacion)
     {
-        info!("Alguno de los pools no es WPOL/USDT V2, abortando");
+        info!(
+            "Alguno de los pools no es {}/{}, abortando",
+            simbolo_base, simbolo_cotizacion
+        );
         return;
     }
 
-    let reserva_compra_wpol = match reserva_de_token(&reservas_compra, wpol_addr) {
-        Some(r) => r,
-        None => return,
-    };
-    let reserva_venta_wpol = match reserva_de_token(&reservas_venta, wpol_addr) {
-        Some(r) => r,
-        None => return,
+    let min_profit = min_profit_usdt();
+    let multiplicador_margen = multiplicador_margen_local();
+    let min_profit_local = min_profit * U256::from(multiplicador_margen);
+    let resultado_estimado = match calcular_mejor_monto_v2(
+        &reservas_compra,
+        &reservas_venta,
+        token_base,
+        token_cotizacion,
+        min_profit_local,
+    ) {
+        Some(resultado) => resultado,
+        None => {
+            info!(
+                "Oportunidad descartada: no hay monto V2 con beneficio estimado mayor al margen local de {:.6} {}",
+                usdt_legible(min_profit_local),
+                simbolo_cotizacion
+            );
+            return;
+        }
     };
 
-    let monto_entrada = calcular_monto(reserva_compra_wpol, reserva_venta_wpol);
-    let monto_wpol = monto_entrada.as_u128() as f64 / 1e18;
-    let min_profit = U256::from(MIN_PROFIT_USDT);
+    let monto_entrada = resultado_estimado.monto_prestamo;
+    let monto_base = monto_entrada.as_u128() as f64 / 1e18;
+    let deuda_usdt = usdt_legible(resultado_estimado.deuda_usdt);
+    let salida_usdt = usdt_legible(resultado_estimado.salida_usdt);
+    let beneficio_usdt = usdt_legible(resultado_estimado.beneficio_usdt);
 
     info!(
-        "Monto dinamico calculado: {:.2} WPOL - beneficio minimo: {:.2} USDT",
-        monto_wpol,
-        MIN_PROFIT_USDT as f64 / 1_000_000.0
+        "Monto dinamico calculado: {:.4} {} - deuda: {:.6} {} - salida: {:.6} {} - beneficio estimado: {:.6} {} - beneficio minimo contrato: {:.6} {} - margen local: {:.6} {}",
+        monto_base,
+        simbolo_base,
+        deuda_usdt,
+        simbolo_cotizacion,
+        salida_usdt,
+        simbolo_cotizacion,
+        beneficio_usdt,
+        simbolo_cotizacion,
+        usdt_legible(min_profit),
+        simbolo_cotizacion,
+        usdt_legible(min_profit_local),
+        simbolo_cotizacion
     );
-
-    let selector = &ethers::utils::keccak256(
-        "ejecutarArbitraje(address,address,address,address,uint256,uint256)",
-    )[..4];
 
     let pool_compra_addr: Address = pool_compra.parse().expect("Pool compra invalido");
     let pool_venta_addr: Address = pool_venta.parse().expect("Pool venta invalido");
+    let tx = construir_tx_arbitraje_v2(
+        contrato_addr,
+        wallet.address(),
+        pool_compra_addr,
+        pool_venta_addr,
+        token_base,
+        token_cotizacion,
+        monto_entrada,
+        min_profit,
+    );
 
-    let mut calldata = selector.to_vec();
-    calldata.extend_from_slice(&ethers::abi::encode(&[
-        ethers::abi::Token::Address(pool_compra_addr),
-        ethers::abi::Token::Address(pool_venta_addr),
-        ethers::abi::Token::Address(wpol_addr),
-        ethers::abi::Token::Address(usdt_addr),
-        ethers::abi::Token::Uint(monto_entrada),
-        ethers::abi::Token::Uint(min_profit),
-    ]));
-
-    let tx = TransactionRequest::new()
-        .to(contrato_addr)
-        .from(wallet.address())
-        .data(calldata)
-        .value(U256::zero());
-
-    info!("Simulando transaccion con {:.2} WPOL...", monto_wpol);
+    info!(
+        "Simulando transaccion con {:.4} {}...",
+        monto_base, simbolo_base
+    );
     match cliente.call(&tx.clone().into(), None).await {
         Ok(_) => info!("Simulacion exitosa, enviando transaccion real..."),
         Err(e) => {
@@ -245,8 +962,8 @@ pub async fn ejecutar_oportunidad(
                 &token_tg,
                 &chat_id,
                 &format!(
-                    "Oportunidad detectada pero la simulacion fallo\nDiferencia: {:.4}%\nMonto: {:.2} WPOL\nError: {}",
-                    diferencia, monto_wpol, e
+                    "Oportunidad detectada pero la simulacion fallo\nDiferencia: {:.4}%\nMonto: {:.4} {}\nError: {}",
+                    diferencia, monto_base, simbolo_base, e
                 ),
             )
             .await;
@@ -263,8 +980,8 @@ pub async fn ejecutar_oportunidad(
                 &token_tg,
                 &chat_id,
                 &format!(
-                    "Arbitraje enviado\nDiferencia: {:.4}%\nMonto: {:.2} WPOL\nHash: {}\nhttps://polygonscan.com/tx/{}",
-                    diferencia, monto_wpol, hash, hash
+                    "Arbitraje enviado {}\nDiferencia: {:.4}%\nMonto: {:.4} {}\nHash: {}\nhttps://polygonscan.com/tx/{}",
+                    simbolo_cotizacion, diferencia, monto_base, simbolo_base, hash, hash
                 ),
             )
             .await;
@@ -283,19 +1000,23 @@ pub async fn ejecutar_oportunidad(
                 }
             }
 
-            let saldo_contrato = saldo_usdt_en_contrato(&cliente, contrato_addr).await;
+            let saldo_contrato =
+                saldo_token_en_contrato(&cliente, token_cotizacion, contrato_addr).await;
             let saldo_usdt = saldo_contrato.as_u64();
             let saldo_legible = saldo_usdt as f64 / 1_000_000.0;
 
-            info!("USDT acumulado en contrato: {:.2}", saldo_legible);
+            info!(
+                "{} acumulado en contrato: {:.6}",
+                simbolo_cotizacion, saldo_legible
+            );
 
             if saldo_usdt >= UMBRAL_AVISO_USDT {
                 enviar_telegram(
                     &token_tg,
                     &chat_id,
                     &format!(
-                        "Ganancia acumulada en contrato: {:.2} USDT. No se retiro automaticamente.",
-                        saldo_legible
+                        "Ganancia acumulada en contrato: {:.6} {}. No se retiro automaticamente.",
+                        saldo_legible, simbolo_cotizacion
                     ),
                 )
                 .await;
@@ -349,7 +1070,7 @@ pub async fn ejecutar_oportunidad_v3(
     let chat_id = std::env::var("TELEGRAM_CHAT_ID").unwrap_or_default();
 
     let contrato_arbitrage = match std::env::var("CONTRATO_ARBITRAGE") {
-        Ok(valor) if !valor.is_empty() => valor,
+        Ok(valor) if !valor.trim().is_empty() => valor.trim().to_string(),
         _ => {
             info!("CONTRATO_ARBITRAGE no configurado, abortando ejecucion V3");
             return;
@@ -396,7 +1117,7 @@ pub async fn ejecutar_oportunidad_v3(
     let pool_venta_addr: Address = pool_venta.parse().expect("Pool venta V3 invalido");
     let wpol_addr: Address = TOKEN_WPOL.parse().expect("WPOL invalido");
     let usdt_addr: Address = TOKEN_USDT.parse().expect("USDT invalido");
-    let min_profit = U256::from(MIN_PROFIT_USDT);
+    let min_profit = min_profit_usdt();
 
     let selector = &ethers::utils::keccak256(
         "ejecutarArbitrajeV3(address,address,address,address,address,uint256,uint256)",
@@ -420,7 +1141,11 @@ pub async fn ejecutar_oportunidad_v3(
         .value(U256::zero());
 
     let monto_usdt = monto_entrada.as_u128() as f64 / 1_000_000.0;
-    info!("Simulando arbitraje V3 con {:.2} USDT...", monto_usdt);
+    info!(
+        "Simulando arbitraje V3 con {:.2} USDT - beneficio minimo contrato: {:.2} USDT...",
+        monto_usdt,
+        usdt_legible(min_profit)
+    );
 
     match cliente.call(&tx.clone().into(), None).await {
         Ok(_) => info!("Simulacion V3 exitosa, enviando transaccion real..."),
@@ -454,5 +1179,69 @@ pub async fn ejecutar_oportunidad_v3(
             .await;
         }
         Err(e) => info!("Error enviando transaccion V3: {}", e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn addr(byte: u8) -> Address {
+        Address::from([byte; 20])
+    }
+
+    fn wpol(cantidad: u128) -> U256 {
+        U256::from(cantidad) * U256::from(10u128).pow(U256::from(18u32))
+    }
+
+    fn usdt(cantidad: u128) -> U256 {
+        U256::from(cantidad) * U256::from(1_000_000u128)
+    }
+
+    fn pool_wpol_usdt(reserva_wpol: U256, reserva_usdt: U256) -> ReservasPool {
+        ReservasPool {
+            token0: addr(1),
+            token1: addr(2),
+            reserve0: reserva_wpol,
+            reserve1: reserva_usdt,
+        }
+    }
+
+    #[test]
+    fn calcula_monto_v2_con_beneficio_real() {
+        let wpol_addr = addr(1);
+        let usdt_addr = addr(2);
+        let pool_barato = pool_wpol_usdt(wpol(1_000_000), usdt(200_000_000));
+        let pool_caro = pool_wpol_usdt(wpol(1_000_000), usdt(250_000_000));
+
+        let resultado = calcular_mejor_monto_v2(
+            &pool_barato,
+            &pool_caro,
+            wpol_addr,
+            usdt_addr,
+            U256::from(MIN_PROFIT_USDT_DEFECTO),
+        )
+        .expect("debe encontrar un monto rentable");
+
+        assert!(resultado.monto_prestamo > U256::zero());
+        assert!(resultado.salida_usdt > resultado.deuda_usdt + U256::from(MIN_PROFIT_USDT_DEFECTO));
+    }
+
+    #[test]
+    fn descarta_v2_sin_beneficio_suficiente() {
+        let wpol_addr = addr(1);
+        let usdt_addr = addr(2);
+        let pool_a = pool_wpol_usdt(wpol(1_000_000), usdt(200_000_000));
+        let pool_b = pool_wpol_usdt(wpol(1_000_000), usdt(200_100_000));
+
+        let resultado = calcular_mejor_monto_v2(
+            &pool_a,
+            &pool_b,
+            wpol_addr,
+            usdt_addr,
+            U256::from(MIN_PROFIT_USDT_DEFECTO),
+        );
+
+        assert!(resultado.is_none());
     }
 }
