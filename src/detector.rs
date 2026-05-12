@@ -1,4 +1,4 @@
-use crate::coordinador::{ejecutar_oportunidad, ejecutar_oportunidad_v3};
+use crate::coordinador::{ejecutar_oportunidad_v2_tokens, ejecutar_oportunidad_v3};
 use crate::evaluador::{DatosSwap, evaluar_arbitraje};
 use crate::pools::POOLS_WPOL_USDT;
 use ethers::{
@@ -9,7 +9,7 @@ use ethers::{
 use futures_util::StreamExt;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::info;
+use tracing::{debug, info};
 
 const TOPIC_V2: &str = "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822";
 const TOPIC_V3: &str = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67";
@@ -18,6 +18,12 @@ fn es_pool_v2(pool: &str) -> bool {
     POOLS_WPOL_USDT
         .iter()
         .any(|p| p.version == 2 && p.direccion.eq_ignore_ascii_case(pool))
+}
+
+fn pool_config(pool: &str) -> Option<&'static crate::pools::Pool> {
+    POOLS_WPOL_USDT
+        .iter()
+        .find(|p| p.direccion.eq_ignore_ascii_case(pool))
 }
 
 fn es_pool_uniswap_v3(pool: &str) -> bool {
@@ -35,7 +41,45 @@ async fn coordinar_oportunidad(
     rpc_mainnet: &str,
 ) {
     if es_pool_v2(&pa) && es_pool_v2(&pb) {
-        ejecutar_oportunidad(dif, pa, pb, precio, wallet, rpc_mainnet).await;
+        let Some(pool_a) = pool_config(&pa) else {
+            return;
+        };
+        let Some(pool_b) = pool_config(&pb) else {
+            return;
+        };
+
+        if pool_a.par != pool_b.par {
+            info!(
+                "Oportunidad monitorizada sin ejecutar: pools V2 de pares distintos. Compra: {} Venta: {}",
+                pa, pb
+            );
+            return;
+        }
+
+        let token_base = match pool_a.token_base.parse() {
+            Ok(addr) => addr,
+            Err(_) => return,
+        };
+        let token_cotizacion = match pool_a.token_cotizacion.parse() {
+            Ok(addr) => addr,
+            Err(_) => return,
+        };
+
+        ejecutar_oportunidad_v2_tokens(
+            dif,
+            pa,
+            pb,
+            precio,
+            token_base,
+            token_cotizacion,
+            pool_a.simbolo_base,
+            pool_a.simbolo_cotizacion,
+            pool_a.decimales_base,
+            pool_a.decimales_cotizacion,
+            wallet,
+            rpc_mainnet,
+        )
+        .await;
     } else if es_pool_uniswap_v3(&pa) && es_pool_uniswap_v3(&pb) {
         ejecutar_oportunidad_v3(dif, pa, pb, precio, wallet, rpc_mainnet).await;
     } else {
@@ -128,7 +172,7 @@ pub async fn iniciar(rpc_polygon: &str, wallet: &ethers::signers::LocalWallet, r
                         amount1_out: datos[3].clone().into_uint().unwrap_or_default().as_u128(),
                     };
 
-                    info!("🔵 Swap V2 en {} ({})",
+                    debug!("🔵 Swap V2 en {} ({})",
                         POOLS_WPOL_USDT.iter().find(|p| p.direccion == pool).map(|p| p.dex).unwrap_or("?"),
                         &pool[..10]);
 
@@ -162,7 +206,7 @@ pub async fn iniciar(rpc_polygon: &str, wallet: &ethers::signers::LocalWallet, r
                         amount1_out: if amount1.is_negative() { amount1_abs } else { 0 },
                     };
 
-                    info!("🟣 Swap V3 en {} ({})",
+                    debug!("🟣 Swap V3 en {} ({})",
                         POOLS_WPOL_USDT.iter().find(|p| p.direccion == pool).map(|p| p.dex).unwrap_or("?"),
                         &pool[..10]);
 

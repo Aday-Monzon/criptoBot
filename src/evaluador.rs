@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use tracing::info;
+use tracing::{debug, info};
 
 pub struct DatosSwap {
     pub pool: String,
@@ -21,7 +21,7 @@ fn umbral_porcentaje() -> f64 {
         .unwrap_or(UMBRAL_PORCENTAJE_DEFECTO)
 }
 
-// Precio observado en USDT por WPOL, normalizando decimales de ambos tokens.
+// Precio observado entre tokens, normalizando decimales de ambos tokens.
 pub fn calcular_precio(swap: &DatosSwap) -> Option<f64> {
     if swap.amount1_in > 0 && swap.amount0_out > 0 {
         let usdt_entrada = swap.amount1_in as f64 / DECIMALES_USDT;
@@ -68,7 +68,7 @@ pub fn evaluar_arbitraje(
 
         let diferencia = ((precio_actual - precio_guardado) / precio_guardado).abs() * 100.0;
 
-        info!(
+        debug!(
             "Mismo par encontrado - Pool A: {} - Pool B: {} - diferencia: {:.6}%",
             swap.pool, pool_guardado, diferencia
         );
@@ -89,7 +89,7 @@ pub fn evaluar_arbitraje(
 
             return Some((diferencia, pool_compra, pool_venta, precio_actual));
         } else {
-            info!(
+            debug!(
                 "Diferencia sin oportunidad: {:.6}% < umbral {:.6}%",
                 diferencia, umbral
             );

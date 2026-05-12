@@ -7,6 +7,7 @@ mod pools;
 
 use dotenv::dotenv;
 use std::env;
+use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() {
@@ -14,7 +15,8 @@ async fn main() {
     dotenv().ok();
 
     // Inicializar sistema de logs
-    tracing_subscriber::fmt::init();
+    let filtro = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::fmt().with_env_filter(filtro).init();
 
     tracing::info!("🤖 CriptoBot iniciando...");
 

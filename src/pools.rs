@@ -8,11 +8,14 @@ pub struct Pool {
     pub token_cotizacion: &'static str,
     pub simbolo_base: &'static str,
     pub simbolo_cotizacion: &'static str,
+    pub decimales_base: u32,
+    pub decimales_cotizacion: u32,
 }
 
 pub const TOKEN_WPOL: &str = "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270";
 pub const TOKEN_USDT: &str = "0xc2132D05D31c914a87C6611C10748AEb04B58e8F";
 pub const TOKEN_USDC: &str = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
+pub const TOKEN_DAI: &str = "0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063";
 
 // Pares activos monitorizados. Los pares V2 con el mismo `par` pueden ejecutarse
 // sin cambiar el contrato actual.
@@ -26,6 +29,8 @@ pub const POOLS_WPOL_USDT: &[Pool] = &[
         token_cotizacion: TOKEN_USDT,
         simbolo_base: "WPOL",
         simbolo_cotizacion: "USDT",
+        decimales_base: 18,
+        decimales_cotizacion: 6,
     },
     Pool {
         direccion: "0x604229c960e5cacf2aaeac8be68ac07ba9df81c3",
@@ -36,6 +41,8 @@ pub const POOLS_WPOL_USDT: &[Pool] = &[
         token_cotizacion: TOKEN_USDT,
         simbolo_base: "WPOL",
         simbolo_cotizacion: "USDT",
+        decimales_base: 18,
+        decimales_cotizacion: 6,
     },
     Pool {
         direccion: "0x781067ef296e5c4a4203f81c593274824b7c185d",
@@ -46,6 +53,8 @@ pub const POOLS_WPOL_USDT: &[Pool] = &[
         token_cotizacion: TOKEN_USDT,
         simbolo_base: "WPOL",
         simbolo_cotizacion: "USDT",
+        decimales_base: 18,
+        decimales_cotizacion: 6,
     },
     Pool {
         direccion: "0x93ca061a80bfb622e7b529f6de1fde4a9129cf8e",
@@ -56,6 +65,8 @@ pub const POOLS_WPOL_USDT: &[Pool] = &[
         token_cotizacion: TOKEN_USDT,
         simbolo_base: "WPOL",
         simbolo_cotizacion: "USDT",
+        decimales_base: 18,
+        decimales_cotizacion: 6,
     },
     Pool {
         direccion: "0x55ff76bffc3cdd9d5fdbbc2ece4528ecce45047e",
@@ -66,6 +77,8 @@ pub const POOLS_WPOL_USDT: &[Pool] = &[
         token_cotizacion: TOKEN_USDT,
         simbolo_base: "WPOL",
         simbolo_cotizacion: "USDT",
+        decimales_base: 18,
+        decimales_cotizacion: 6,
     },
     Pool {
         direccion: "0x65d43b64e3b31965cd5ea367d4c2b94c03084797",
@@ -76,6 +89,8 @@ pub const POOLS_WPOL_USDT: &[Pool] = &[
         token_cotizacion: TOKEN_USDT,
         simbolo_base: "WPOL",
         simbolo_cotizacion: "USDT",
+        decimales_base: 18,
+        decimales_cotizacion: 6,
     },
     Pool {
         direccion: "0x5b41eedcfc8e0ae47493d4945aa1ae4fe05430ff",
@@ -86,6 +101,8 @@ pub const POOLS_WPOL_USDT: &[Pool] = &[
         token_cotizacion: TOKEN_USDT,
         simbolo_base: "WPOL",
         simbolo_cotizacion: "USDT",
+        decimales_base: 18,
+        decimales_cotizacion: 6,
     },
     Pool {
         direccion: "0x6e7a5fafcec6bb1e78bae2a1f0b612012bf14827",
@@ -96,6 +113,8 @@ pub const POOLS_WPOL_USDT: &[Pool] = &[
         token_cotizacion: TOKEN_USDC,
         simbolo_base: "WPOL",
         simbolo_cotizacion: "USDC",
+        decimales_base: 18,
+        decimales_cotizacion: 6,
     },
     Pool {
         direccion: "0xcd353f79d9fade311fc3119b841e1f456b54e858",
@@ -106,5 +125,43 @@ pub const POOLS_WPOL_USDT: &[Pool] = &[
         token_cotizacion: TOKEN_USDC,
         simbolo_base: "WPOL",
         simbolo_cotizacion: "USDC",
+        decimales_base: 18,
+        decimales_cotizacion: 6,
+    },
+    Pool {
+        direccion: "0xeef611894ceae652979c9d0dae1deb597790c6ee",
+        dex: "QuickSwap V2",
+        version: 2,
+        par: "WPOL/DAI",
+        token_base: TOKEN_WPOL,
+        token_cotizacion: TOKEN_DAI,
+        simbolo_base: "WPOL",
+        simbolo_cotizacion: "DAI",
+        decimales_base: 18,
+        decimales_cotizacion: 18,
+    },
+    Pool {
+        direccion: "0xd32f3139a214034a0f9777c87ee0a064c1ff6ae2",
+        dex: "ApeSwap V2",
+        version: 2,
+        par: "WPOL/DAI",
+        token_base: TOKEN_WPOL,
+        token_cotizacion: TOKEN_DAI,
+        simbolo_base: "WPOL",
+        simbolo_cotizacion: "DAI",
+        decimales_base: 18,
+        decimales_cotizacion: 18,
+    },
+    Pool {
+        direccion: "0x8929d3fea77398f64448c85015633c2d6472fb29",
+        dex: "SushiSwap V2",
+        version: 2,
+        par: "WPOL/DAI",
+        token_base: TOKEN_WPOL,
+        token_cotizacion: TOKEN_DAI,
+        simbolo_base: "WPOL",
+        simbolo_cotizacion: "DAI",
+        decimales_base: 18,
+        decimales_cotizacion: 18,
     },
 ];

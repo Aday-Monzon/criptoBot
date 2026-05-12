@@ -8,7 +8,7 @@ use ethers::{
 use futures_util::future::join_all;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::time;
-use tracing::info;
+use tracing::{debug, info};
 
 const UMBRAL_AVISO_USDT: u64 = 10_000_000;
 const MIN_PROFIT_USDT_DEFECTO: u64 = 5_000_000;
@@ -39,10 +39,13 @@ struct CandidatoArbitrajeV2 {
     token_cotizacion: Address,
     simbolo_base: String,
     simbolo_cotizacion: String,
+    decimales_base: u32,
+    decimales_cotizacion: u32,
     diferencia: f64,
     precio_compra: f64,
     precio_venta: f64,
     resultado: ResultadoArbitrajeV2,
+    min_profit: U256,
 }
 
 struct EvaluacionGas {
@@ -247,7 +250,12 @@ fn calcular_mejor_monto_v2(
 }
 
 fn min_profit_usdt() -> U256 {
-    parse_usdt_env("MIN_PROFIT_USDT").unwrap_or_else(|| U256::from(MIN_PROFIT_USDT_DEFECTO))
+    min_profit_token(6)
+}
+
+fn min_profit_token(decimales: u32) -> U256 {
+    parse_token_env("MIN_PROFIT_USDT", decimales)
+        .unwrap_or_else(|| escalar_unidades(MIN_PROFIT_USDT_DEFECTO, 6, decimales))
 }
 
 fn multiplicador_margen_local() -> u64 {
@@ -259,11 +267,11 @@ fn multiplicador_margen_local() -> u64 {
 }
 
 fn usdt_legible(valor: U256) -> f64 {
-    valor.as_u128() as f64 / 1_000_000.0
+    token_legible(valor, 6)
 }
 
-fn wpol_legible(valor: U256) -> f64 {
-    valor.as_u128() as f64 / 1e18
+fn token_legible(valor: U256, decimales: u32) -> f64 {
+    valor.as_u128() as f64 / 10f64.powi(decimales as i32)
 }
 
 fn env_u64(nombre: &str, defecto: u64) -> u64 {
@@ -290,9 +298,14 @@ fn precio_base_cotizacion(
     reservas: &ReservasPool,
     token_base: Address,
     token_cotizacion: Address,
+    decimales_base: u32,
+    decimales_cotizacion: u32,
 ) -> Option<f64> {
-    let reserva_base = wpol_legible(reserva_de_token(reservas, token_base)?);
-    let reserva_cotizacion = usdt_legible(reserva_de_token(reservas, token_cotizacion)?);
+    let reserva_base = token_legible(reserva_de_token(reservas, token_base)?, decimales_base);
+    let reserva_cotizacion = token_legible(
+        reserva_de_token(reservas, token_cotizacion)?,
+        decimales_cotizacion,
+    );
 
     if reserva_base <= 0.0 || reserva_cotizacion <= 0.0 {
         None
@@ -412,7 +425,7 @@ async fn leer_reservas_v2_en_paralelo(
         let token_base = match pool.token_base.parse::<Address>() {
             Ok(addr) => addr,
             Err(e) => {
-                info!(
+                debug!(
                     "Escaner V2 ignora pool con token base invalido {}: {}",
                     pool.direccion, e
                 );
@@ -422,7 +435,7 @@ async fn leer_reservas_v2_en_paralelo(
         let token_cotizacion = match pool.token_cotizacion.parse::<Address>() {
             Ok(addr) => addr,
             Err(e) => {
-                info!(
+                debug!(
                     "Escaner V2 ignora pool con token cotizacion invalido {}: {}",
                     pool.direccion, e
                 );
@@ -435,14 +448,14 @@ async fn leer_reservas_v2_en_paralelo(
                 Some((pool.direccion.to_string(), reservas))
             }
             Some(_) => {
-                info!(
+                debug!(
                     "Escaner V2 ignora pool sin par esperado {}: {}",
                     pool.par, pool.direccion
                 );
                 None
             }
             None => {
-                info!("Escaner V2 no pudo leer reservas: {}", pool.direccion);
+                debug!("Escaner V2 no pudo leer reservas: {}", pool.direccion);
                 None
             }
         }
@@ -456,7 +469,6 @@ async fn ejecutar_candidato_v2_calculado(
     contrato_addr: Address,
     wallet_addr: Address,
     candidato: CandidatoArbitrajeV2,
-    min_profit: U256,
     token_tg: &str,
     chat_id: &str,
 ) {
@@ -475,7 +487,7 @@ async fn ejecutar_candidato_v2_calculado(
         }
     };
 
-    let monto_base = wpol_legible(candidato.resultado.monto_prestamo);
+    let monto_base = token_legible(candidato.resultado.monto_prestamo, candidato.decimales_base);
     let tx = construir_tx_arbitraje_v2(
         contrato_addr,
         wallet_addr,
@@ -484,7 +496,7 @@ async fn ejecutar_candidato_v2_calculado(
         candidato.token_base,
         candidato.token_cotizacion,
         candidato.resultado.monto_prestamo,
-        min_profit,
+        candidato.min_profit,
     );
 
     info!(
@@ -527,10 +539,7 @@ async fn ejecutar_candidato_v2_calculado(
     }
 }
 
-fn mejor_candidato_v2(
-    reservas: &HashMap<String, ReservasPool>,
-    min_profit_local: U256,
-) -> Option<CandidatoArbitrajeV2> {
+fn mejor_candidato_v2(reservas: &HashMap<String, ReservasPool>) -> Option<CandidatoArbitrajeV2> {
     let mut mejor: Option<CandidatoArbitrajeV2> = None;
     let pools_v2: Vec<_> = POOLS_WPOL_USDT
         .iter()
@@ -549,6 +558,8 @@ fn mejor_candidato_v2(
             let Ok(token_cotizacion) = pool_a.token_cotizacion.parse::<Address>() else {
                 continue;
             };
+            let min_profit = min_profit_token(pool_a.decimales_cotizacion);
+            let min_profit_local = min_profit * U256::from(multiplicador_margen_local());
 
             let Some(reservas_a) = reservas.get(pool_a.direccion) else {
                 continue;
@@ -557,12 +568,22 @@ fn mejor_candidato_v2(
                 continue;
             };
 
-            let Some(precio_a) = precio_base_cotizacion(reservas_a, token_base, token_cotizacion)
-            else {
+            let Some(precio_a) = precio_base_cotizacion(
+                reservas_a,
+                token_base,
+                token_cotizacion,
+                pool_a.decimales_base,
+                pool_a.decimales_cotizacion,
+            ) else {
                 continue;
             };
-            let Some(precio_b) = precio_base_cotizacion(reservas_b, token_base, token_cotizacion)
-            else {
+            let Some(precio_b) = precio_base_cotizacion(
+                reservas_b,
+                token_base,
+                token_cotizacion,
+                pool_a.decimales_base,
+                pool_a.decimales_cotizacion,
+            ) else {
                 continue;
             };
 
@@ -601,7 +622,7 @@ fn mejor_candidato_v2(
                 token_cotizacion,
                 min_profit_local,
             ) else {
-                info!(
+                debug!(
                     "Escaner V2 descarta {} {} -> {}: dif {:.4}% sin beneficio bruto mayor a {:.6} {}",
                     pool_a.par,
                     pool_compra,
@@ -624,10 +645,13 @@ fn mejor_candidato_v2(
                     token_cotizacion,
                     simbolo_base: pool_a.simbolo_base.to_string(),
                     simbolo_cotizacion: pool_a.simbolo_cotizacion.to_string(),
+                    decimales_base: pool_a.decimales_base,
+                    decimales_cotizacion: pool_a.decimales_cotizacion,
                     diferencia,
                     precio_compra,
                     precio_venta,
                     resultado,
+                    min_profit,
                 });
             }
         }
@@ -684,9 +708,13 @@ pub async fn iniciar_escaner_v2(rpc_mainnet: &str, wallet: &LocalWallet) {
     loop {
         let reservas = leer_reservas_v2_en_paralelo(&cliente).await;
 
-        if let Some(candidato) = mejor_candidato_v2(&reservas, min_profit_local) {
-            let beneficio_bruto = usdt_legible(candidato.resultado.beneficio_usdt);
-            let monto_wpol = wpol_legible(candidato.resultado.monto_prestamo);
+        if let Some(candidato) = mejor_candidato_v2(&reservas) {
+            let beneficio_bruto = token_legible(
+                candidato.resultado.beneficio_usdt,
+                candidato.decimales_cotizacion,
+            );
+            let monto_base =
+                token_legible(candidato.resultado.monto_prestamo, candidato.decimales_base);
             let clave = format!("{}:{}", candidato.pool_compra, candidato.pool_venta);
             let en_cooldown = ultimo_envio
                 .get(&clave)
@@ -698,7 +726,7 @@ pub async fn iniciar_escaner_v2(rpc_mainnet: &str, wallet: &LocalWallet) {
                 candidato.diferencia,
                 candidato.precio_compra,
                 candidato.precio_venta,
-                monto_wpol,
+                monto_base,
                 beneficio_bruto,
                 candidato.simbolo_base,
                 candidato.simbolo_cotizacion,
@@ -748,7 +776,7 @@ pub async fn iniciar_escaner_v2(rpc_mainnet: &str, wallet: &LocalWallet) {
                 );
 
                 if neto <= usdt_legible(min_neto) {
-                    info!(
+                    debug!(
                         "Escaner V2 descarta por neto insuficiente: {:.6} <= {:.6} USDT",
                         neto,
                         usdt_legible(min_neto)
@@ -773,7 +801,7 @@ pub async fn iniciar_escaner_v2(rpc_mainnet: &str, wallet: &LocalWallet) {
                             candidato.simbolo_cotizacion,
                             neto,
                             candidato.simbolo_cotizacion,
-                            monto_wpol,
+                            monto_base,
                             candidato.simbolo_base
                         ),
                     )
@@ -783,7 +811,6 @@ pub async fn iniciar_escaner_v2(rpc_mainnet: &str, wallet: &LocalWallet) {
                         contrato_addr,
                         wallet.address(),
                         candidato,
-                        min_profit,
                         &token_tg,
                         &chat_id,
                     )
@@ -793,36 +820,11 @@ pub async fn iniciar_escaner_v2(rpc_mainnet: &str, wallet: &LocalWallet) {
                 }
             }
         } else {
-            info!("Escaner V2: sin candidatos rentables en esta vuelta");
+            debug!("Escaner V2: sin candidatos rentables en esta vuelta");
         }
 
         time::sleep(Duration::from_secs(intervalo)).await;
     }
-}
-
-pub async fn ejecutar_oportunidad(
-    diferencia: f64,
-    pool_compra: String,
-    pool_venta: String,
-    precio: f64,
-    wallet: &LocalWallet,
-    rpc_mainnet: &str,
-) {
-    let wpol_addr: Address = TOKEN_WPOL.parse().expect("WPOL invalido");
-    let usdt_addr: Address = TOKEN_USDT.parse().expect("USDT invalido");
-    ejecutar_oportunidad_v2_tokens(
-        diferencia,
-        pool_compra,
-        pool_venta,
-        precio,
-        wpol_addr,
-        usdt_addr,
-        "WPOL",
-        "USDT",
-        wallet,
-        rpc_mainnet,
-    )
-    .await;
 }
 
 pub async fn ejecutar_oportunidad_v2_tokens(
@@ -834,6 +836,8 @@ pub async fn ejecutar_oportunidad_v2_tokens(
     token_cotizacion: Address,
     simbolo_base: &str,
     simbolo_cotizacion: &str,
+    decimales_base: u32,
+    decimales_cotizacion: u32,
     wallet: &LocalWallet,
     rpc_mainnet: &str,
 ) {
@@ -894,7 +898,7 @@ pub async fn ejecutar_oportunidad_v2_tokens(
         return;
     }
 
-    let min_profit = min_profit_usdt();
+    let min_profit = min_profit_token(decimales_cotizacion);
     let multiplicador_margen = multiplicador_margen_local();
     let min_profit_local = min_profit * U256::from(multiplicador_margen);
     let resultado_estimado = match calcular_mejor_monto_v2(
@@ -916,10 +920,10 @@ pub async fn ejecutar_oportunidad_v2_tokens(
     };
 
     let monto_entrada = resultado_estimado.monto_prestamo;
-    let monto_base = monto_entrada.as_u128() as f64 / 1e18;
-    let deuda_usdt = usdt_legible(resultado_estimado.deuda_usdt);
-    let salida_usdt = usdt_legible(resultado_estimado.salida_usdt);
-    let beneficio_usdt = usdt_legible(resultado_estimado.beneficio_usdt);
+    let monto_base = token_legible(monto_entrada, decimales_base);
+    let deuda_usdt = token_legible(resultado_estimado.deuda_usdt, decimales_cotizacion);
+    let salida_usdt = token_legible(resultado_estimado.salida_usdt, decimales_cotizacion);
+    let beneficio_usdt = token_legible(resultado_estimado.beneficio_usdt, decimales_cotizacion);
 
     info!(
         "Monto dinamico calculado: {:.4} {} - deuda: {:.6} {} - salida: {:.6} {} - beneficio estimado: {:.6} {} - beneficio minimo contrato: {:.6} {} - margen local: {:.6} {}",
@@ -931,9 +935,9 @@ pub async fn ejecutar_oportunidad_v2_tokens(
         simbolo_cotizacion,
         beneficio_usdt,
         simbolo_cotizacion,
-        usdt_legible(min_profit),
+        token_legible(min_profit, decimales_cotizacion),
         simbolo_cotizacion,
-        usdt_legible(min_profit_local),
+        token_legible(min_profit_local, decimales_cotizacion),
         simbolo_cotizacion
     );
 
@@ -1029,18 +1033,22 @@ pub async fn ejecutar_oportunidad_v2_tokens(
 }
 
 fn parse_usdt_env(nombre: &str) -> Option<U256> {
+    parse_token_env(nombre, 6)
+}
+
+fn parse_token_env(nombre: &str, decimales_token: u32) -> Option<U256> {
     let valor = std::env::var(nombre).ok()?;
     let normalizado = valor.trim().replace(',', ".");
     let mut partes = normalizado.split('.');
     let enteros = partes.next()?.parse::<u128>().ok()?;
     let decimales = partes.next().unwrap_or("");
 
-    if partes.next().is_some() || decimales.len() > 6 {
+    if partes.next().is_some() || decimales.len() > decimales_token as usize {
         return None;
     }
 
     let mut decimales_padded = decimales.to_string();
-    while decimales_padded.len() < 6 {
+    while decimales_padded.len() < decimales_token as usize {
         decimales_padded.push('0');
     }
 
@@ -1050,7 +1058,15 @@ fn parse_usdt_env(nombre: &str) -> Option<U256> {
         decimales_padded.parse::<u128>().ok()?
     };
 
-    Some(U256::from(enteros * 1_000_000 + fraccion))
+    Some(U256::from(enteros * 10u128.pow(decimales_token) + fraccion))
+}
+
+fn escalar_unidades(valor: u64, decimales_origen: u32, decimales_destino: u32) -> U256 {
+    if decimales_destino >= decimales_origen {
+        U256::from(valor) * U256::from(10u128).pow(U256::from(decimales_destino - decimales_origen))
+    } else {
+        U256::from(valor) / U256::from(10u128).pow(U256::from(decimales_origen - decimales_destino))
+    }
 }
 
 pub async fn ejecutar_oportunidad_v3(
