@@ -15,7 +15,6 @@ const MIN_PROFIT_USDT_DEFECTO: u64 = 5_000_000;
 const MULTIPLICADOR_MARGEN_LOCAL_DEFECTO: u64 = 2;
 const ESCANER_V2_SEGUNDOS_DEFECTO: u64 = 5;
 const ESCANER_V2_COOLDOWN_SEGUNDOS_DEFECTO: u64 = 60;
-const GAS_ARBITRAJE_V2_DEFECTO: u64 = 550_000;
 
 struct ReservasPool {
     token0: Address,
@@ -383,15 +382,15 @@ async fn estimar_gas_arbitraje_v2(
     cliente: &Arc<SignerMiddleware<Provider<Http>, LocalWallet>>,
     tx: &TransactionRequest,
     precio_usdt_wpol: f64,
-) -> EvaluacionGas {
+) -> Option<EvaluacionGas> {
     let gas_limit = match cliente.estimate_gas(&tx.clone().into(), None).await {
         Ok(gas) => gas,
         Err(e) => {
             info!(
-                "No se pudo estimar gas con simulacion completa, usando gas por defecto: {}",
+                "No se pudo estimar gas con simulacion completa; candidato descartado: {}",
                 e
             );
-            U256::from(env_u64("GAS_ARBITRAJE_V2", GAS_ARBITRAJE_V2_DEFECTO))
+            return None;
         }
     };
 
@@ -406,11 +405,11 @@ async fn estimar_gas_arbitraje_v2(
     let coste_pol = gas_limit.as_u128() as f64 * gas_price.as_u128() as f64 / 1e18;
     let coste_usdt = coste_pol * precio_usdt_wpol;
 
-    EvaluacionGas {
+    Some(EvaluacionGas {
         gas_limit,
         gas_price,
         coste_usdt,
-    }
+    })
 }
 
 async fn leer_reservas_v2_en_paralelo(
@@ -689,7 +688,7 @@ pub async fn iniciar_escaner_v2(rpc_mainnet: &str, wallet: &LocalWallet) {
 
     let min_profit = min_profit_usdt();
     let min_profit_local = min_profit * U256::from(multiplicador_margen_local());
-    let min_neto = parse_usdt_env("MIN_PROFIT_NETO_USDT").unwrap_or(min_profit);
+    let min_neto = parse_usdt_env("MIN_PROFIT_NETO_USDT").unwrap_or_else(min_profit_usdt);
     let mut ultimo_envio: HashMap<String, std::time::Instant> = HashMap::new();
     let pools_v2_count = POOLS_WPOL_USDT
         .iter()
@@ -767,7 +766,12 @@ pub async fn iniciar_escaner_v2(rpc_mainnet: &str, wallet: &LocalWallet) {
                     candidato.resultado.monto_prestamo,
                     min_profit,
                 );
-                let gas = estimar_gas_arbitraje_v2(&cliente, &tx, candidato.precio_compra).await;
+                let Some(gas) =
+                    estimar_gas_arbitraje_v2(&cliente, &tx, candidato.precio_compra).await
+                else {
+                    time::sleep(Duration::from_secs(intervalo)).await;
+                    continue;
+                };
                 let neto = beneficio_bruto - gas.coste_usdt;
 
                 info!(
@@ -953,6 +957,46 @@ pub async fn ejecutar_oportunidad_v2_tokens(
         monto_entrada,
         min_profit,
     );
+
+    let min_neto = parse_usdt_env("MIN_PROFIT_NETO_USDT").unwrap_or_else(min_profit_usdt);
+    let precio_gas = precio_base_cotizacion(
+        &reservas_compra,
+        token_base,
+        token_cotizacion,
+        decimales_base,
+        decimales_cotizacion,
+    )
+    .unwrap_or(_precio);
+    let Some(gas) = estimar_gas_arbitraje_v2(&cliente, &tx, precio_gas).await else {
+        info!("Oportunidad descartada: no se pudo validar gas/neto antes de ejecutar");
+        return;
+    };
+    let neto = beneficio_usdt - gas.coste_usdt;
+
+    info!(
+        "Neto estimado V2 evento: bruto {:.6} {} - gas {:.6} {} (limit {}, price {} wei) = {:.6} {} - minimo {:.6} {}",
+        beneficio_usdt,
+        simbolo_cotizacion,
+        gas.coste_usdt,
+        simbolo_cotizacion,
+        gas.gas_limit,
+        gas.gas_price,
+        neto,
+        simbolo_cotizacion,
+        usdt_legible(min_neto),
+        simbolo_cotizacion
+    );
+
+    if neto <= usdt_legible(min_neto) {
+        info!(
+            "Oportunidad descartada: neto estimado {:.6} {} <= minimo {:.6} {}",
+            neto,
+            simbolo_cotizacion,
+            usdt_legible(min_neto),
+            simbolo_cotizacion
+        );
+        return;
+    }
 
     info!(
         "Simulando transaccion con {:.4} {}...",
