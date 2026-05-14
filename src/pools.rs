@@ -12,6 +12,21 @@ pub struct Pool {
     pub decimales_cotizacion: u32,
 }
 
+pub struct PasoTriangularV2 {
+    pub pool: &'static str,
+    pub dex: &'static str,
+    pub token_in: &'static str,
+    pub token_out: &'static str,
+}
+
+pub struct RutaTriangularV2 {
+    pub nombre: &'static str,
+    pub token_inicio: &'static str,
+    pub simbolo_inicio: &'static str,
+    pub decimales_inicio: u32,
+    pub pasos: &'static [PasoTriangularV2],
+}
+
 pub const TOKEN_WPOL: &str = "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270";
 pub const TOKEN_USDT: &str = "0xc2132D05D31c914a87C6611C10748AEb04B58e8F";
 pub const TOKEN_USDC: &str = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
@@ -163,5 +178,271 @@ pub const POOLS_WPOL_USDT: &[Pool] = &[
         simbolo_cotizacion: "DAI",
         decimales_base: 18,
         decimales_cotizacion: 18,
+    },
+];
+
+pub const POOL_QUICKSWAP_V2_USDC_USDT: &str = "0xe43ab6540c0929ef29d216a34ab1f0eacc5c3825";
+pub const POOL_SUSHISWAP_V2_USDC_USDT: &str = "0x4B1F1e2435A9C96f7330FAea190Ef6A7C8D70001";
+pub const POOL_APESWAP_V2_USDC_USDT: &str = "0xaf6dd86c35f573d1061ed214c6a90899fdad95b5";
+pub const POOL_QUICKSWAP_V2_DAI_USDT: &str = "0x59153f27eeFE07E5eCE4f9304EBBa1DA6F53CA88";
+pub const POOL_SUSHISWAP_V2_DAI_USDT: &str = "0x3b31bb4b6ba4f67f4ef54e78bcb0aaa4f53dc7ff";
+pub const POOL_APESWAP_V2_DAI_USDT: &str = "0xede04e0cd393a076c49deb95d3686a52ccc49c71";
+pub const POOL_QUICKSWAP_V2_DAI_USDC: &str = "0xf04adbf75cdfc5ed26eea4bbbb991db002036bdd";
+pub const POOL_SUSHISWAP_V2_DAI_USDC: &str = "0xcd578f016888b57f1b1e3f887f392f0159e26747";
+pub const POOL_APESWAP_V2_DAI_USDC: &str = "0x5b13B583D4317aB15186Ed660A1E4C65C10da659";
+pub const POOL_APESWAP_V2_WPOL_USDC: &str = "0x019011032a7ac3a87ee885b6c08467ac46ad11cd";
+
+const RUTA_USDT_WPOL_USDC_USDT_QUICKSWAP: &[PasoTriangularV2] = &[
+    PasoTriangularV2 {
+        pool: "0x604229c960e5cacf2aaeac8be68ac07ba9df81c3",
+        dex: "QuickSwap V2",
+        token_in: TOKEN_USDT,
+        token_out: TOKEN_WPOL,
+    },
+    PasoTriangularV2 {
+        pool: "0x6e7a5fafcec6bb1e78bae2a1f0b612012bf14827",
+        dex: "QuickSwap V2",
+        token_in: TOKEN_WPOL,
+        token_out: TOKEN_USDC,
+    },
+    PasoTriangularV2 {
+        pool: POOL_QUICKSWAP_V2_USDC_USDT,
+        dex: "QuickSwap V2",
+        token_in: TOKEN_USDC,
+        token_out: TOKEN_USDT,
+    },
+];
+
+const RUTA_USDT_WPOL_USDC_USDT_SUSHISWAP: &[PasoTriangularV2] = &[
+    PasoTriangularV2 {
+        pool: "0x55ff76bffc3cdd9d5fdbbc2ece4528ecce45047e",
+        dex: "SushiSwap V2",
+        token_in: TOKEN_USDT,
+        token_out: TOKEN_WPOL,
+    },
+    PasoTriangularV2 {
+        pool: "0xcd353f79d9fade311fc3119b841e1f456b54e858",
+        dex: "SushiSwap V2",
+        token_in: TOKEN_WPOL,
+        token_out: TOKEN_USDC,
+    },
+    PasoTriangularV2 {
+        pool: POOL_SUSHISWAP_V2_USDC_USDT,
+        dex: "SushiSwap V2",
+        token_in: TOKEN_USDC,
+        token_out: TOKEN_USDT,
+    },
+];
+
+const RUTA_USDT_WPOL_USDC_USDT_APESWAP: &[PasoTriangularV2] = &[
+    PasoTriangularV2 {
+        pool: "0x65d43b64e3b31965cd5ea367d4c2b94c03084797",
+        dex: "ApeSwap V2",
+        token_in: TOKEN_USDT,
+        token_out: TOKEN_WPOL,
+    },
+    PasoTriangularV2 {
+        pool: POOL_APESWAP_V2_WPOL_USDC,
+        dex: "ApeSwap V2",
+        token_in: TOKEN_WPOL,
+        token_out: TOKEN_USDC,
+    },
+    PasoTriangularV2 {
+        pool: POOL_APESWAP_V2_USDC_USDT,
+        dex: "ApeSwap V2",
+        token_in: TOKEN_USDC,
+        token_out: TOKEN_USDT,
+    },
+];
+
+const RUTA_USDT_WPOL_DAI_USDT_QUICKSWAP: &[PasoTriangularV2] = &[
+    PasoTriangularV2 {
+        pool: "0x604229c960e5cacf2aaeac8be68ac07ba9df81c3",
+        dex: "QuickSwap V2",
+        token_in: TOKEN_USDT,
+        token_out: TOKEN_WPOL,
+    },
+    PasoTriangularV2 {
+        pool: "0xeef611894ceae652979c9d0dae1deb597790c6ee",
+        dex: "QuickSwap V2",
+        token_in: TOKEN_WPOL,
+        token_out: TOKEN_DAI,
+    },
+    PasoTriangularV2 {
+        pool: POOL_QUICKSWAP_V2_DAI_USDT,
+        dex: "QuickSwap V2",
+        token_in: TOKEN_DAI,
+        token_out: TOKEN_USDT,
+    },
+];
+
+const RUTA_USDT_WPOL_DAI_USDT_SUSHISWAP: &[PasoTriangularV2] = &[
+    PasoTriangularV2 {
+        pool: "0x55ff76bffc3cdd9d5fdbbc2ece4528ecce45047e",
+        dex: "SushiSwap V2",
+        token_in: TOKEN_USDT,
+        token_out: TOKEN_WPOL,
+    },
+    PasoTriangularV2 {
+        pool: "0x8929d3fea77398f64448c85015633c2d6472fb29",
+        dex: "SushiSwap V2",
+        token_in: TOKEN_WPOL,
+        token_out: TOKEN_DAI,
+    },
+    PasoTriangularV2 {
+        pool: POOL_SUSHISWAP_V2_DAI_USDT,
+        dex: "SushiSwap V2",
+        token_in: TOKEN_DAI,
+        token_out: TOKEN_USDT,
+    },
+];
+
+const RUTA_USDT_WPOL_DAI_USDT_APESWAP: &[PasoTriangularV2] = &[
+    PasoTriangularV2 {
+        pool: "0x65d43b64e3b31965cd5ea367d4c2b94c03084797",
+        dex: "ApeSwap V2",
+        token_in: TOKEN_USDT,
+        token_out: TOKEN_WPOL,
+    },
+    PasoTriangularV2 {
+        pool: "0xd32f3139a214034a0f9777c87ee0a064c1ff6ae2",
+        dex: "ApeSwap V2",
+        token_in: TOKEN_WPOL,
+        token_out: TOKEN_DAI,
+    },
+    PasoTriangularV2 {
+        pool: POOL_APESWAP_V2_DAI_USDT,
+        dex: "ApeSwap V2",
+        token_in: TOKEN_DAI,
+        token_out: TOKEN_USDT,
+    },
+];
+
+const RUTA_USDC_WPOL_DAI_USDC_QUICKSWAP: &[PasoTriangularV2] = &[
+    PasoTriangularV2 {
+        pool: "0x6e7a5fafcec6bb1e78bae2a1f0b612012bf14827",
+        dex: "QuickSwap V2",
+        token_in: TOKEN_USDC,
+        token_out: TOKEN_WPOL,
+    },
+    PasoTriangularV2 {
+        pool: "0xeef611894ceae652979c9d0dae1deb597790c6ee",
+        dex: "QuickSwap V2",
+        token_in: TOKEN_WPOL,
+        token_out: TOKEN_DAI,
+    },
+    PasoTriangularV2 {
+        pool: POOL_QUICKSWAP_V2_DAI_USDC,
+        dex: "QuickSwap V2",
+        token_in: TOKEN_DAI,
+        token_out: TOKEN_USDC,
+    },
+];
+
+const RUTA_USDC_WPOL_DAI_USDC_SUSHISWAP: &[PasoTriangularV2] = &[
+    PasoTriangularV2 {
+        pool: "0xcd353f79d9fade311fc3119b841e1f456b54e858",
+        dex: "SushiSwap V2",
+        token_in: TOKEN_USDC,
+        token_out: TOKEN_WPOL,
+    },
+    PasoTriangularV2 {
+        pool: "0x8929d3fea77398f64448c85015633c2d6472fb29",
+        dex: "SushiSwap V2",
+        token_in: TOKEN_WPOL,
+        token_out: TOKEN_DAI,
+    },
+    PasoTriangularV2 {
+        pool: POOL_SUSHISWAP_V2_DAI_USDC,
+        dex: "SushiSwap V2",
+        token_in: TOKEN_DAI,
+        token_out: TOKEN_USDC,
+    },
+];
+
+const RUTA_USDC_WPOL_DAI_USDC_APESWAP: &[PasoTriangularV2] = &[
+    PasoTriangularV2 {
+        pool: POOL_APESWAP_V2_WPOL_USDC,
+        dex: "ApeSwap V2",
+        token_in: TOKEN_USDC,
+        token_out: TOKEN_WPOL,
+    },
+    PasoTriangularV2 {
+        pool: "0xd32f3139a214034a0f9777c87ee0a064c1ff6ae2",
+        dex: "ApeSwap V2",
+        token_in: TOKEN_WPOL,
+        token_out: TOKEN_DAI,
+    },
+    PasoTriangularV2 {
+        pool: POOL_APESWAP_V2_DAI_USDC,
+        dex: "ApeSwap V2",
+        token_in: TOKEN_DAI,
+        token_out: TOKEN_USDC,
+    },
+];
+
+pub const RUTAS_TRIANGULARES_V2: &[RutaTriangularV2] = &[
+    RutaTriangularV2 {
+        nombre: "USDT -> WPOL -> USDC -> USDT (QuickSwap V2)",
+        token_inicio: TOKEN_USDT,
+        simbolo_inicio: "USDT",
+        decimales_inicio: 6,
+        pasos: RUTA_USDT_WPOL_USDC_USDT_QUICKSWAP,
+    },
+    RutaTriangularV2 {
+        nombre: "USDT -> WPOL -> USDC -> USDT (SushiSwap V2)",
+        token_inicio: TOKEN_USDT,
+        simbolo_inicio: "USDT",
+        decimales_inicio: 6,
+        pasos: RUTA_USDT_WPOL_USDC_USDT_SUSHISWAP,
+    },
+    RutaTriangularV2 {
+        nombre: "USDT -> WPOL -> USDC -> USDT (ApeSwap V2)",
+        token_inicio: TOKEN_USDT,
+        simbolo_inicio: "USDT",
+        decimales_inicio: 6,
+        pasos: RUTA_USDT_WPOL_USDC_USDT_APESWAP,
+    },
+    RutaTriangularV2 {
+        nombre: "USDT -> WPOL -> DAI -> USDT (QuickSwap V2)",
+        token_inicio: TOKEN_USDT,
+        simbolo_inicio: "USDT",
+        decimales_inicio: 6,
+        pasos: RUTA_USDT_WPOL_DAI_USDT_QUICKSWAP,
+    },
+    RutaTriangularV2 {
+        nombre: "USDT -> WPOL -> DAI -> USDT (SushiSwap V2)",
+        token_inicio: TOKEN_USDT,
+        simbolo_inicio: "USDT",
+        decimales_inicio: 6,
+        pasos: RUTA_USDT_WPOL_DAI_USDT_SUSHISWAP,
+    },
+    RutaTriangularV2 {
+        nombre: "USDT -> WPOL -> DAI -> USDT (ApeSwap V2)",
+        token_inicio: TOKEN_USDT,
+        simbolo_inicio: "USDT",
+        decimales_inicio: 6,
+        pasos: RUTA_USDT_WPOL_DAI_USDT_APESWAP,
+    },
+    RutaTriangularV2 {
+        nombre: "USDC -> WPOL -> DAI -> USDC (QuickSwap V2)",
+        token_inicio: TOKEN_USDC,
+        simbolo_inicio: "USDC",
+        decimales_inicio: 6,
+        pasos: RUTA_USDC_WPOL_DAI_USDC_QUICKSWAP,
+    },
+    RutaTriangularV2 {
+        nombre: "USDC -> WPOL -> DAI -> USDC (SushiSwap V2)",
+        token_inicio: TOKEN_USDC,
+        simbolo_inicio: "USDC",
+        decimales_inicio: 6,
+        pasos: RUTA_USDC_WPOL_DAI_USDC_SUSHISWAP,
+    },
+    RutaTriangularV2 {
+        nombre: "USDC -> WPOL -> DAI -> USDC (ApeSwap V2)",
+        token_inicio: TOKEN_USDC,
+        simbolo_inicio: "USDC",
+        decimales_inicio: 6,
+        pasos: RUTA_USDC_WPOL_DAI_USDC_APESWAP,
     },
 ];

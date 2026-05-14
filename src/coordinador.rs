@@ -1,4 +1,6 @@
-use crate::pools::{POOLS_WPOL_USDT, TOKEN_USDT, TOKEN_WPOL};
+use crate::pools::{
+    POOLS_WPOL_USDT, RUTAS_TRIANGULARES_V2, RutaTriangularV2, TOKEN_USDT, TOKEN_WPOL,
+};
 use ethers::{
     middleware::SignerMiddleware,
     providers::{Http, Middleware, Provider},
@@ -15,6 +17,9 @@ const MIN_PROFIT_USDT_DEFECTO: u64 = 5_000_000;
 const MULTIPLICADOR_MARGEN_LOCAL_DEFECTO: u64 = 2;
 const ESCANER_V2_SEGUNDOS_DEFECTO: u64 = 5;
 const ESCANER_V2_COOLDOWN_SEGUNDOS_DEFECTO: u64 = 60;
+const ESCANER_TRIANGULAR_SEGUNDOS_DEFECTO: u64 = 10;
+const ESCANER_TRIANGULAR_COOLDOWN_SEGUNDOS_DEFECTO: u64 = 120;
+const GAS_TRIANGULAR_V2_DEFECTO: u64 = 450_000;
 
 struct ReservasPool {
     token0: Address,
@@ -51,6 +56,18 @@ struct EvaluacionGas {
     gas_limit: U256,
     gas_price: U256,
     coste_usdt: f64,
+}
+
+struct ResultadoTriangularV2 {
+    monto_inicial: U256,
+    monto_final: U256,
+    bruto: U256,
+}
+
+struct CandidatoTriangularV2 {
+    resultado: ResultadoTriangularV2,
+    gas: EvaluacionGas,
+    neto: f64,
 }
 
 pub async fn enviar_telegram(token: &str, chat_id: &str, mensaje: &str) {
@@ -412,6 +429,189 @@ async fn estimar_gas_arbitraje_v2(
     })
 }
 
+async fn estimar_gas_triangular_v2(
+    cliente: &Arc<SignerMiddleware<Provider<Http>, LocalWallet>>,
+    gas_limit: U256,
+    precio_token_por_pol: f64,
+) -> Option<EvaluacionGas> {
+    let gas_price = match cliente.get_gas_price().await {
+        Ok(precio) => precio,
+        Err(e) => {
+            info!(
+                "No se pudo consultar gas price triangular, usando 100 gwei: {}",
+                e
+            );
+            U256::from(100_000_000_000u64)
+        }
+    };
+
+    let coste_pol = gas_limit.as_u128() as f64 * gas_price.as_u128() as f64 / 1e18;
+    Some(EvaluacionGas {
+        gas_limit,
+        gas_price,
+        coste_usdt: coste_pol * precio_token_por_pol,
+    })
+}
+
+fn precio_token_inicio_por_pol(
+    ruta: &RutaTriangularV2,
+    reservas: &HashMap<String, ReservasPool>,
+) -> Option<f64> {
+    let primer_paso = ruta.pasos.first()?;
+    let reservas_primer_pool = reservas.get(primer_paso.pool)?;
+    let wpol: Address = TOKEN_WPOL.parse().ok()?;
+    let token_inicio: Address = ruta.token_inicio.parse().ok()?;
+    let (reserva_wpol, reserva_inicio) =
+        reservas_ordenadas(reservas_primer_pool, wpol, token_inicio)?;
+
+    let wpol_legible = token_legible(reserva_wpol, 18);
+    let inicio_legible = token_legible(reserva_inicio, ruta.decimales_inicio);
+
+    if wpol_legible <= 0.0 {
+        None
+    } else {
+        Some(inicio_legible / wpol_legible)
+    }
+}
+
+fn parse_token_literal(valor: &str, decimales_token: u32) -> Option<U256> {
+    let normalizado = valor.trim().replace(',', ".");
+    let mut partes = normalizado.split('.');
+    let enteros = partes.next()?.parse::<u128>().ok()?;
+    let decimales = partes.next().unwrap_or("");
+
+    if partes.next().is_some() || decimales.len() > decimales_token as usize {
+        return None;
+    }
+
+    let mut decimales_padded = decimales.to_string();
+    while decimales_padded.len() < decimales_token as usize {
+        decimales_padded.push('0');
+    }
+
+    let fraccion = if decimales_padded.is_empty() {
+        0
+    } else {
+        decimales_padded.parse::<u128>().ok()?
+    };
+
+    Some(U256::from(enteros * 10u128.pow(decimales_token) + fraccion))
+}
+
+fn montos_triangular_v2(simbolo_inicio: &str, decimales_inicio: u32) -> Vec<U256> {
+    let nombre_env = format!("MONTOS_TRIANGULAR_{}", simbolo_inicio);
+
+    if let Ok(valor) = std::env::var(nombre_env) {
+        let montos: Vec<_> = valor
+            .split(',')
+            .filter_map(|monto| parse_token_literal(monto, decimales_inicio))
+            .filter(|monto| *monto > U256::zero())
+            .collect();
+
+        if !montos.is_empty() {
+            return montos;
+        }
+    }
+
+    [5u64, 10, 25, 50, 100]
+        .into_iter()
+        .map(|monto| U256::from(monto) * U256::from(10u128).pow(U256::from(decimales_inicio)))
+        .collect()
+}
+
+fn simular_ruta_triangular_v2(
+    ruta: &RutaTriangularV2,
+    monto_inicial: U256,
+    reservas: &HashMap<String, ReservasPool>,
+) -> Option<ResultadoTriangularV2> {
+    let mut monto_actual = monto_inicial;
+
+    for paso in ruta.pasos {
+        let reservas_pool = reservas.get(paso.pool)?;
+        let token_in: Address = paso.token_in.parse().ok()?;
+        let token_out: Address = paso.token_out.parse().ok()?;
+        let (reserva_in, reserva_out) = reservas_ordenadas(reservas_pool, token_in, token_out)?;
+        monto_actual = get_amount_out(monto_actual, reserva_in, reserva_out)?;
+    }
+
+    let bruto = monto_actual.checked_sub(monto_inicial)?;
+    Some(ResultadoTriangularV2 {
+        monto_inicial,
+        monto_final: monto_actual,
+        bruto,
+    })
+}
+
+async fn leer_reservas_ruta_triangular_v2(
+    cliente: &Arc<SignerMiddleware<Provider<Http>, LocalWallet>>,
+    ruta: &RutaTriangularV2,
+) -> HashMap<String, ReservasPool> {
+    let lecturas = ruta.pasos.iter().map(|paso| async move {
+        let reservas = consultar_reservas(cliente, paso.pool).await?;
+        let token_in: Address = paso.token_in.parse().ok()?;
+        let token_out: Address = paso.token_out.parse().ok()?;
+
+        if contiene_par_tokens(&reservas, token_in, token_out) {
+            Some((paso.pool.to_string(), reservas))
+        } else {
+            debug!(
+                "Escaner triangular ignora pool con par inesperado {} {}",
+                paso.dex, paso.pool
+            );
+            None
+        }
+    });
+
+    join_all(lecturas).await.into_iter().flatten().collect()
+}
+
+async fn mejor_candidato_triangular_v2(
+    cliente: &Arc<SignerMiddleware<Provider<Http>, LocalWallet>>,
+    ruta: &RutaTriangularV2,
+    reservas: &HashMap<String, ReservasPool>,
+) -> Option<CandidatoTriangularV2> {
+    let precio_token_por_pol = precio_token_inicio_por_pol(ruta, reservas)?;
+    let gas_limit = U256::from(env_u64("GAS_TRIANGULAR_V2", GAS_TRIANGULAR_V2_DEFECTO));
+    let gas = estimar_gas_triangular_v2(cliente, gas_limit, precio_token_por_pol).await?;
+    let mut mejor: Option<CandidatoTriangularV2> = None;
+
+    for monto in montos_triangular_v2(ruta.simbolo_inicio, ruta.decimales_inicio) {
+        let Some(resultado) = simular_ruta_triangular_v2(ruta, monto, reservas) else {
+            continue;
+        };
+
+        let bruto_legible = token_legible(resultado.bruto, ruta.decimales_inicio);
+        let neto = bruto_legible - gas.coste_usdt;
+
+        if neto <= 0.0 {
+            debug!(
+                "Triangular V2 descarta {} monto {:.6} {}: bruto {:.6}, gas {:.6}, neto {:.6}",
+                ruta.nombre,
+                token_legible(monto, ruta.decimales_inicio),
+                ruta.simbolo_inicio,
+                bruto_legible,
+                gas.coste_usdt,
+                neto
+            );
+            continue;
+        }
+
+        if mejor.as_ref().map_or(true, |actual| neto > actual.neto) {
+            mejor = Some(CandidatoTriangularV2 {
+                resultado,
+                gas: EvaluacionGas {
+                    gas_limit: gas.gas_limit,
+                    gas_price: gas.gas_price,
+                    coste_usdt: gas.coste_usdt,
+                },
+                neto,
+            });
+        }
+    }
+
+    mejor
+}
+
 async fn leer_reservas_v2_en_paralelo(
     cliente: &Arc<SignerMiddleware<Provider<Http>, LocalWallet>>,
 ) -> HashMap<String, ReservasPool> {
@@ -504,7 +704,7 @@ async fn ejecutar_candidato_v2_calculado(
     );
 
     match cliente.call(&tx.clone().into(), None).await {
-        Ok(_) => info!("Simulacion final exitosa, enviando transaccion real..."),
+        Ok(_) => info!("Simulacion final OK; enviando TX V2 y esperando recibo..."),
         Err(e) => {
             info!("Simulacion final fallida: {}", e);
             enviar_telegram(
@@ -523,16 +723,80 @@ async fn ejecutar_candidato_v2_calculado(
     match cliente.send_transaction(tx, None).await {
         Ok(tx_pendiente) => {
             let hash = format!("{:?}", tx_pendiente.tx_hash());
-            info!("Transaccion V2 enviada - hash: {}", hash);
+            info!(
+                "TX V2 enviada a mempool; pendiente de confirmacion - hash: {}",
+                hash
+            );
             enviar_telegram(
                 token_tg,
                 chat_id,
                 &format!(
-                    "Arbitraje V2 enviado {}\nDiferencia: {:.4}%\nMonto: {:.4} {}\nHash: {}\nhttps://polygonscan.com/tx/{}",
+                    "TX V2 enviada, pendiente de confirmacion {}\nDiferencia: {:.4}%\nMonto: {:.4} {}\nHash: {}\nhttps://polygonscan.com/tx/{}",
                     candidato.par, candidato.diferencia, monto_base, candidato.simbolo_base, hash, hash
                 ),
             )
             .await;
+
+            match tx_pendiente.await {
+                Ok(Some(recibo)) => {
+                    let bloque = recibo
+                        .block_number
+                        .map(|numero| numero.to_string())
+                        .unwrap_or_else(|| "desconocido".to_string());
+
+                    if recibo
+                        .status
+                        .map(|estado| estado.as_u64() == 1)
+                        .unwrap_or(false)
+                    {
+                        info!("TX V2 confirmada OK en bloque {}", bloque);
+                        enviar_telegram(
+                            token_tg,
+                            chat_id,
+                            &format!(
+                                "Arbitraje V2 EXITOSO {}\nBloque: {}\nHash: {}\nhttps://polygonscan.com/tx/{}",
+                                candidato.par, bloque, hash, hash
+                            ),
+                        )
+                        .await;
+                    } else {
+                        info!("TX V2 minada con estado FAIL en bloque {}", bloque);
+                        enviar_telegram(
+                            token_tg,
+                            chat_id,
+                            &format!(
+                                "Arbitraje V2 FALLIDO {}\nBloque: {}\nHash: {}\nhttps://polygonscan.com/tx/{}",
+                                candidato.par, bloque, hash, hash
+                            ),
+                        )
+                        .await;
+                    }
+                }
+                Ok(None) => {
+                    info!("TX V2 enviada, pero aun sin recibo");
+                    enviar_telegram(
+                        token_tg,
+                        chat_id,
+                        &format!(
+                            "TX V2 enviada, pero aun sin recibo {}\nHash: {}\nhttps://polygonscan.com/tx/{}",
+                            candidato.par, hash, hash
+                        ),
+                    )
+                    .await;
+                }
+                Err(e) => {
+                    info!("Error esperando confirmacion V2: {}", e);
+                    enviar_telegram(
+                        token_tg,
+                        chat_id,
+                        &format!(
+                            "No se pudo confirmar el estado del arbitraje V2 {}\nHash: {}\nError: {}\nhttps://polygonscan.com/tx/{}",
+                            candidato.par, hash, e, hash
+                        ),
+                    )
+                    .await;
+                }
+            }
         }
         Err(e) => info!("Error enviando transaccion V2: {}", e),
     }
@@ -831,6 +1095,135 @@ pub async fn iniciar_escaner_v2(rpc_mainnet: &str, wallet: &LocalWallet) {
     }
 }
 
+pub async fn iniciar_escaner_triangular_v2(rpc_mainnet: &str, wallet: &LocalWallet) {
+    if !env_bool("ESCANER_TRIANGULAR_ACTIVO", true) {
+        info!("Escaner triangular V2 desactivado por ESCANER_TRIANGULAR_ACTIVO=false");
+        return;
+    }
+
+    let token_tg = std::env::var("TELEGRAM_TOKEN").unwrap_or_default();
+    let chat_id = std::env::var("TELEGRAM_CHAT_ID").unwrap_or_default();
+    let ejecutar = env_bool("ESCANER_TRIANGULAR_EJECUTAR", false);
+    let intervalo = env_u64(
+        "ESCANER_TRIANGULAR_SEGUNDOS",
+        ESCANER_TRIANGULAR_SEGUNDOS_DEFECTO,
+    );
+    let cooldown = env_u64(
+        "ESCANER_TRIANGULAR_COOLDOWN_SEGUNDOS",
+        ESCANER_TRIANGULAR_COOLDOWN_SEGUNDOS_DEFECTO,
+    );
+    let min_neto = parse_usdt_env("MIN_PROFIT_NETO_USDT").unwrap_or_else(U256::zero);
+    let proveedor = Provider::<Http>::try_from(rpc_mainnet).expect("Error conectando a Polygon");
+    let wallet_mainnet = wallet.clone().with_chain_id(137u64);
+    let cliente = Arc::new(SignerMiddleware::new(proveedor, wallet_mainnet));
+    let mut ultimo_aviso: HashMap<String, std::time::Instant> = HashMap::new();
+
+    info!(
+        "Escaner triangular V2 activo: {} rutas, cada {}s, ejecucion={}, neto minimo {:.6} USDT",
+        RUTAS_TRIANGULARES_V2.len(),
+        intervalo,
+        ejecutar,
+        usdt_legible(min_neto)
+    );
+
+    if ejecutar {
+        info!(
+            "ESCANER_TRIANGULAR_EJECUTAR=true, pero la triangulacion V2 queda solo en observacion hasta anadir contrato de ejecucion"
+        );
+    }
+
+    loop {
+        for ruta in RUTAS_TRIANGULARES_V2 {
+            let reservas = leer_reservas_ruta_triangular_v2(&cliente, ruta).await;
+
+            if reservas.len() != ruta.pasos.len() {
+                debug!(
+                    "Escaner triangular V2 no pudo leer todos los pools de {} ({}/{})",
+                    ruta.nombre,
+                    reservas.len(),
+                    ruta.pasos.len()
+                );
+                continue;
+            }
+
+            let Some(candidato) = mejor_candidato_triangular_v2(&cliente, ruta, &reservas).await
+            else {
+                debug!(
+                    "Escaner triangular V2 sin candidato rentable para {}",
+                    ruta.nombre
+                );
+                continue;
+            };
+
+            let bruto = token_legible(candidato.resultado.bruto, ruta.decimales_inicio);
+            let monto_in = token_legible(candidato.resultado.monto_inicial, ruta.decimales_inicio);
+            let monto_out = token_legible(candidato.resultado.monto_final, ruta.decimales_inicio);
+
+            info!(
+                "Triangular V2 candidato {}: monto_in {:.6} {} monto_out {:.6} {} bruto {:.6} {} gas {:.6} {} (limit {}, price {} wei) neto {:.6} {}",
+                ruta.nombre,
+                monto_in,
+                ruta.simbolo_inicio,
+                monto_out,
+                ruta.simbolo_inicio,
+                bruto,
+                ruta.simbolo_inicio,
+                candidato.gas.coste_usdt,
+                ruta.simbolo_inicio,
+                candidato.gas.gas_limit,
+                candidato.gas.gas_price,
+                candidato.neto,
+                ruta.simbolo_inicio
+            );
+
+            if candidato.neto <= usdt_legible(min_neto) {
+                debug!(
+                    "Triangular V2 descarta por neto insuficiente: {:.6} <= {:.6} {}",
+                    candidato.neto,
+                    usdt_legible(min_neto),
+                    ruta.simbolo_inicio
+                );
+                continue;
+            }
+
+            let en_cooldown = ultimo_aviso
+                .get(ruta.nombre)
+                .is_some_and(|ultimo| ultimo.elapsed() < Duration::from_secs(cooldown));
+
+            if en_cooldown {
+                debug!(
+                    "Triangular V2 candidato en cooldown {}s para {}",
+                    cooldown, ruta.nombre
+                );
+                continue;
+            }
+
+            ultimo_aviso.insert(ruta.nombre.to_string(), std::time::Instant::now());
+            enviar_telegram(
+                &token_tg,
+                &chat_id,
+                &format!(
+                    "Triangular V2 observado\nRuta: {}\nMonto in: {:.6} {}\nMonto out: {:.6} {}\nBruto: {:.6} {}\nGas est.: {:.6} {}\nNeto: {:.6} {}\nEjecucion: observacion",
+                    ruta.nombre,
+                    monto_in,
+                    ruta.simbolo_inicio,
+                    monto_out,
+                    ruta.simbolo_inicio,
+                    bruto,
+                    ruta.simbolo_inicio,
+                    candidato.gas.coste_usdt,
+                    ruta.simbolo_inicio,
+                    candidato.neto,
+                    ruta.simbolo_inicio
+                ),
+            )
+            .await;
+        }
+
+        time::sleep(Duration::from_secs(intervalo)).await;
+    }
+}
+
 pub async fn ejecutar_oportunidad_v2_tokens(
     diferencia: f64,
     pool_compra: String,
@@ -1003,7 +1396,7 @@ pub async fn ejecutar_oportunidad_v2_tokens(
         monto_base, simbolo_base
     );
     match cliente.call(&tx.clone().into(), None).await {
-        Ok(_) => info!("Simulacion exitosa, enviando transaccion real..."),
+        Ok(_) => info!("Simulacion OK; enviando TX V2 por evento y esperando recibo..."),
         Err(e) => {
             info!("Simulacion fallida: {}", e);
             enviar_telegram(
@@ -1022,13 +1415,16 @@ pub async fn ejecutar_oportunidad_v2_tokens(
     match cliente.send_transaction(tx, None).await {
         Ok(tx_pendiente) => {
             let hash = format!("{:?}", tx_pendiente.tx_hash());
-            info!("Transaccion enviada - hash: {}", hash);
+            info!(
+                "TX V2 por evento enviada a mempool; pendiente de confirmacion - hash: {}",
+                hash
+            );
 
             enviar_telegram(
                 &token_tg,
                 &chat_id,
                 &format!(
-                    "Arbitraje enviado {}\nDiferencia: {:.4}%\nMonto: {:.4} {}\nHash: {}\nhttps://polygonscan.com/tx/{}",
+                    "TX V2 enviada, pendiente de confirmacion {}\nDiferencia: {:.4}%\nMonto: {:.4} {}\nHash: {}\nhttps://polygonscan.com/tx/{}",
                     simbolo_cotizacion, diferencia, monto_base, simbolo_base, hash, hash
                 ),
             )
@@ -1036,7 +1432,42 @@ pub async fn ejecutar_oportunidad_v2_tokens(
 
             match tx_pendiente.await {
                 Ok(Some(recibo)) => {
-                    info!("Transaccion confirmada en bloque {:?}", recibo.block_number)
+                    let bloque = recibo
+                        .block_number
+                        .map(|numero| numero.to_string())
+                        .unwrap_or_else(|| "desconocido".to_string());
+
+                    if recibo
+                        .status
+                        .map(|estado| estado.as_u64() == 1)
+                        .unwrap_or(false)
+                    {
+                        info!("TX V2 por evento confirmada OK en bloque {}", bloque);
+                        enviar_telegram(
+                            &token_tg,
+                            &chat_id,
+                            &format!(
+                                "Arbitraje V2 EXITOSO {}\nBloque: {}\nHash: {}\nhttps://polygonscan.com/tx/{}",
+                                simbolo_cotizacion, bloque, hash, hash
+                            ),
+                        )
+                        .await;
+                    } else {
+                        info!(
+                            "TX V2 por evento minada con estado FAIL en bloque {}",
+                            bloque
+                        );
+                        enviar_telegram(
+                            &token_tg,
+                            &chat_id,
+                            &format!(
+                                "Arbitraje V2 FALLIDO {}\nBloque: {}\nHash: {}\nhttps://polygonscan.com/tx/{}",
+                                simbolo_cotizacion, bloque, hash, hash
+                            ),
+                        )
+                        .await;
+                        return;
+                    }
                 }
                 Ok(None) => {
                     info!("Transaccion sin recibo todavia, se omite consulta de saldo");
@@ -1082,27 +1513,7 @@ fn parse_usdt_env(nombre: &str) -> Option<U256> {
 
 fn parse_token_env(nombre: &str, decimales_token: u32) -> Option<U256> {
     let valor = std::env::var(nombre).ok()?;
-    let normalizado = valor.trim().replace(',', ".");
-    let mut partes = normalizado.split('.');
-    let enteros = partes.next()?.parse::<u128>().ok()?;
-    let decimales = partes.next().unwrap_or("");
-
-    if partes.next().is_some() || decimales.len() > decimales_token as usize {
-        return None;
-    }
-
-    let mut decimales_padded = decimales.to_string();
-    while decimales_padded.len() < decimales_token as usize {
-        decimales_padded.push('0');
-    }
-
-    let fraccion = if decimales_padded.is_empty() {
-        0
-    } else {
-        decimales_padded.parse::<u128>().ok()?
-    };
-
-    Some(U256::from(enteros * 10u128.pow(decimales_token) + fraccion))
+    parse_token_literal(&valor, decimales_token)
 }
 
 fn escalar_unidades(valor: u64, decimales_origen: u32, decimales_destino: u32) -> U256 {
@@ -1208,7 +1619,7 @@ pub async fn ejecutar_oportunidad_v3(
     );
 
     match cliente.call(&tx.clone().into(), None).await {
-        Ok(_) => info!("Simulacion V3 exitosa, enviando transaccion real..."),
+        Ok(_) => info!("Simulacion V3 OK; enviando TX V3 y esperando recibo..."),
         Err(e) => {
             info!("Simulacion V3 fallida: {}", e);
             enviar_telegram(
@@ -1227,16 +1638,80 @@ pub async fn ejecutar_oportunidad_v3(
     match cliente.send_transaction(tx, None).await {
         Ok(tx_pendiente) => {
             let hash = format!("{:?}", tx_pendiente.tx_hash());
-            info!("Transaccion V3 enviada - hash: {}", hash);
+            info!(
+                "TX V3 enviada a mempool; pendiente de confirmacion - hash: {}",
+                hash
+            );
             enviar_telegram(
                 &token_tg,
                 &chat_id,
                 &format!(
-                    "Arbitraje V3 enviado\nDiferencia: {:.4}%\nMonto: {:.2} USDT\nHash: {}\nhttps://polygonscan.com/tx/{}",
+                    "TX V3 enviada, pendiente de confirmacion\nDiferencia: {:.4}%\nMonto: {:.2} USDT\nHash: {}\nhttps://polygonscan.com/tx/{}",
                     diferencia, monto_usdt, hash, hash
                 ),
             )
             .await;
+
+            match tx_pendiente.await {
+                Ok(Some(recibo)) => {
+                    let bloque = recibo
+                        .block_number
+                        .map(|numero| numero.to_string())
+                        .unwrap_or_else(|| "desconocido".to_string());
+
+                    if recibo
+                        .status
+                        .map(|estado| estado.as_u64() == 1)
+                        .unwrap_or(false)
+                    {
+                        info!("TX V3 confirmada OK en bloque {}", bloque);
+                        enviar_telegram(
+                            &token_tg,
+                            &chat_id,
+                            &format!(
+                                "Arbitraje V3 EXITOSO\nBloque: {}\nHash: {}\nhttps://polygonscan.com/tx/{}",
+                                bloque, hash, hash
+                            ),
+                        )
+                        .await;
+                    } else {
+                        info!("TX V3 minada con estado FAIL en bloque {}", bloque);
+                        enviar_telegram(
+                            &token_tg,
+                            &chat_id,
+                            &format!(
+                                "Arbitraje V3 FALLIDO\nBloque: {}\nHash: {}\nhttps://polygonscan.com/tx/{}",
+                                bloque, hash, hash
+                            ),
+                        )
+                        .await;
+                    }
+                }
+                Ok(None) => {
+                    info!("TX V3 enviada, pero aun sin recibo");
+                    enviar_telegram(
+                        &token_tg,
+                        &chat_id,
+                        &format!(
+                            "TX V3 enviada, pero aun sin recibo\nHash: {}\nhttps://polygonscan.com/tx/{}",
+                            hash, hash
+                        ),
+                    )
+                    .await;
+                }
+                Err(e) => {
+                    info!("Error esperando confirmacion V3: {}", e);
+                    enviar_telegram(
+                        &token_tg,
+                        &chat_id,
+                        &format!(
+                            "No se pudo confirmar el estado del arbitraje V3\nHash: {}\nError: {}\nhttps://polygonscan.com/tx/{}",
+                            hash, e, hash
+                        ),
+                    )
+                    .await;
+                }
+            }
         }
         Err(e) => info!("Error enviando transaccion V3: {}", e),
     }
@@ -1303,5 +1778,74 @@ mod tests {
         );
 
         assert!(resultado.is_none());
+    }
+
+    #[test]
+    fn simula_ruta_triangular_v2_con_beneficio() {
+        static PASOS: &[crate::pools::PasoTriangularV2] = &[
+            crate::pools::PasoTriangularV2 {
+                pool: "pool-a-b",
+                dex: "Test V2",
+                token_in: "0x0101010101010101010101010101010101010101",
+                token_out: "0x0202020202020202020202020202020202020202",
+            },
+            crate::pools::PasoTriangularV2 {
+                pool: "pool-b-c",
+                dex: "Test V2",
+                token_in: "0x0202020202020202020202020202020202020202",
+                token_out: "0x0303030303030303030303030303030303030303",
+            },
+            crate::pools::PasoTriangularV2 {
+                pool: "pool-c-a",
+                dex: "Test V2",
+                token_in: "0x0303030303030303030303030303030303030303",
+                token_out: "0x0101010101010101010101010101010101010101",
+            },
+        ];
+        static RUTA: RutaTriangularV2 = RutaTriangularV2 {
+            nombre: "A -> B -> C -> A",
+            token_inicio: "0x0101010101010101010101010101010101010101",
+            simbolo_inicio: "A",
+            decimales_inicio: 0,
+            pasos: PASOS,
+        };
+
+        let mut reservas = HashMap::new();
+        reservas.insert(
+            "pool-a-b".to_string(),
+            ReservasPool {
+                token0: addr(1),
+                token1: addr(2),
+                reserve0: U256::from(1_000u64),
+                reserve1: U256::from(1_000u64),
+            },
+        );
+        reservas.insert(
+            "pool-b-c".to_string(),
+            ReservasPool {
+                token0: addr(2),
+                token1: addr(3),
+                reserve0: U256::from(1_000u64),
+                reserve1: U256::from(2_000u64),
+            },
+        );
+        reservas.insert(
+            "pool-c-a".to_string(),
+            ReservasPool {
+                token0: addr(3),
+                token1: addr(1),
+                reserve0: U256::from(1_000u64),
+                reserve1: U256::from(1_000u64),
+            },
+        );
+
+        let resultado = simular_ruta_triangular_v2(&RUTA, U256::from(10u64), &reservas)
+            .expect("debe simular una ruta rentable");
+
+        assert!(resultado.monto_final > resultado.monto_inicial);
+        assert_eq!(
+            resultado.bruto,
+            resultado.monto_final - resultado.monto_inicial
+        );
     }
 }

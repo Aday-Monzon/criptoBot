@@ -39,6 +39,7 @@ async fn main() {
     let rpc_amoy = env::var("RPC_MAINNET").expect("RPC_MAINNET no encontrado en .env");
     tokio::join!(
         detector::iniciar(&rpc_polygon, &wallet, &rpc_amoy),
-        coordinador::iniciar_escaner_v2(&rpc_amoy, &wallet)
+        coordinador::iniciar_escaner_v2(&rpc_amoy, &wallet),
+        coordinador::iniciar_escaner_triangular_v2(&rpc_amoy, &wallet)
     );
 }
