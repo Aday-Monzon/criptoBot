@@ -4,6 +4,7 @@ mod detector;
 mod evaluador;
 mod firmante;
 mod pools;
+mod rpc;
 
 use dotenv::dotenv;
 use std::env;
@@ -32,13 +33,30 @@ async fn main() {
     let tg_chat = std::env::var("TELEGRAM_CHAT_ID").unwrap_or_default();
     coordinador::enviar_telegram(&tg_token, &tg_chat, "🤖 CriptoBot iniciado correctamente").await;
 
-    // Obtener URL de Polygon del archivo .env
-    let rpc_polygon = env::var("RPC_POLYGON").expect("RPC_POLYGON no encontrado en .env");
+    let rpc_polygon = rpc::urls_env(
+        "RPC_POLYGON",
+        "RPC_POLYGON_FALLBACKS",
+        &[
+            "https://polygon-bor-rpc.publicnode.com",
+            "https://polygon-rpc.com",
+        ],
+    );
 
     // Iniciar detector por eventos y escaner periodico por reservas
-    let rpc_amoy = env::var("RPC_MAINNET").expect("RPC_MAINNET no encontrado en .env");
+    let rpc_mainnet_urls = rpc::urls_env(
+        "RPC_MAINNET",
+        "RPC_MAINNET_FALLBACKS",
+        &[
+            "https://polygon-bor-rpc.publicnode.com",
+            "https://polygon-rpc.com",
+        ],
+    );
+    let rpc_amoy = rpc::seleccionar_http(&rpc_mainnet_urls)
+        .await
+        .expect("Ningun RPC_MAINNET respondio");
+
     tokio::join!(
-        detector::iniciar(&rpc_polygon, &wallet, &rpc_amoy),
+        detector::iniciar(rpc_polygon, &wallet, &rpc_amoy),
         coordinador::iniciar_escaner_v2(&rpc_amoy, &wallet),
         coordinador::iniciar_escaner_triangular_v2(&rpc_amoy, &wallet)
     );
