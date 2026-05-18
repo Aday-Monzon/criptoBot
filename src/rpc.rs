@@ -2,6 +2,10 @@ use ethers::providers::{Http, Middleware, Provider};
 use std::{env, time::Duration};
 use tracing::info;
 
+fn es_http(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://")
+}
+
 pub fn urls_env(principal: &str, fallbacks: &str, predeterminados: &[&str]) -> Vec<String> {
     let mut urls = Vec::new();
 
@@ -9,7 +13,16 @@ pub fn urls_env(principal: &str, fallbacks: &str, predeterminados: &[&str]) -> V
         if let Ok(valor) = env::var(nombre) {
             for url in valor.split([',', ';']) {
                 let url = url.trim();
-                if !url.is_empty() && !urls.iter().any(|existente| existente == url) {
+                if url.is_empty() {
+                    continue;
+                }
+
+                if !es_http(url) {
+                    info!("RPC ignorado porque no es HTTP/HTTPS: {}", url);
+                    continue;
+                }
+
+                if !urls.iter().any(|existente| existente == url) {
                     urls.push(url.to_string());
                 }
             }
@@ -17,7 +30,7 @@ pub fn urls_env(principal: &str, fallbacks: &str, predeterminados: &[&str]) -> V
     }
 
     for url in predeterminados {
-        if !urls.iter().any(|existente| existente == url) {
+        if es_http(url) && !urls.iter().any(|existente| existente == url) {
             urls.push((*url).to_string());
         }
     }

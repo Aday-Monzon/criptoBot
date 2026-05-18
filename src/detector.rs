@@ -13,6 +13,7 @@ use tracing::{debug, info};
 const TOPIC_V2: &str = "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822";
 const TOPIC_V3: &str = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67";
 const DETECTOR_HTTP_SEGUNDOS_DEFECTO: u64 = 2;
+const DETECTOR_MAX_BLOQUES_LOGS_DEFECTO: u64 = 20;
 
 type DetectorResult = Result<(), Box<dyn Error + Send + Sync>>;
 
@@ -175,16 +176,22 @@ async fn escuchar_polygon_http(
         .and_then(|valor| valor.parse::<u64>().ok())
         .filter(|valor| *valor > 0)
         .unwrap_or(DETECTOR_HTTP_SEGUNDOS_DEFECTO);
+    let max_bloques_logs = std::env::var("DETECTOR_MAX_BLOQUES_LOGS")
+        .ok()
+        .and_then(|valor| valor.parse::<u64>().ok())
+        .filter(|valor| *valor > 0)
+        .unwrap_or(DETECTOR_MAX_BLOQUES_LOGS_DEFECTO);
     let mut ultimo_bloque = proveedor
         .get_block_number()
         .await
         .map_err(|error| format!("error leyendo bloque inicial: {}", error))?;
 
     info!(
-        "Bot activo: monitorizando {} pools desde bloque {}, cada {}s",
+        "Bot activo: monitorizando {} pools desde bloque {}, cada {}s, max {} bloques por getLogs",
         POOLS_WPOL_USDT.len(),
         ultimo_bloque,
-        intervalo
+        intervalo,
+        max_bloques_logs
     );
 
     loop {
@@ -199,33 +206,33 @@ async fn escuchar_polygon_http(
             continue;
         }
 
-        let desde = ultimo_bloque + U64::from(1);
-        let filtro_v2 = filtro_v2_base
-            .clone()
-            .from_block(desde)
-            .to_block(bloque_actual);
-        let filtro_v3 = filtro_v3_base
-            .clone()
-            .from_block(desde)
-            .to_block(bloque_actual);
+        let mut desde = ultimo_bloque + U64::from(1);
+        let max_bloques = U64::from(max_bloques_logs);
 
-        for log in proveedor
-            .get_logs(&filtro_v2)
-            .await
-            .map_err(|error| format!("error consultando logs V2: {}", error))?
-        {
-            procesar_log_v2(log, &mut precios, &tokens_por_pool, wallet, rpc_mainnet).await;
+        while desde <= bloque_actual {
+            let hasta = std::cmp::min(desde + max_bloques - U64::from(1), bloque_actual);
+            let filtro_v2 = filtro_v2_base.clone().from_block(desde).to_block(hasta);
+            let filtro_v3 = filtro_v3_base.clone().from_block(desde).to_block(hasta);
+
+            for log in proveedor
+                .get_logs(&filtro_v2)
+                .await
+                .map_err(|error| format!("error consultando logs V2: {}", error))?
+            {
+                procesar_log_v2(log, &mut precios, &tokens_por_pool, wallet, rpc_mainnet).await;
+            }
+
+            for log in proveedor
+                .get_logs(&filtro_v3)
+                .await
+                .map_err(|error| format!("error consultando logs V3: {}", error))?
+            {
+                procesar_log_v3(log, &mut precios, &tokens_por_pool, wallet, rpc_mainnet).await;
+            }
+
+            ultimo_bloque = hasta;
+            desde = hasta + U64::from(1);
         }
-
-        for log in proveedor
-            .get_logs(&filtro_v3)
-            .await
-            .map_err(|error| format!("error consultando logs V3: {}", error))?
-        {
-            procesar_log_v3(log, &mut precios, &tokens_por_pool, wallet, rpc_mainnet).await;
-        }
-
-        ultimo_bloque = bloque_actual;
     }
 }
 
