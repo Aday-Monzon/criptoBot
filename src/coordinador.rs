@@ -1,5 +1,5 @@
 use crate::pools::{
-    POOLS_WPOL_USDT, RUTAS_TRIANGULARES_V2, RutaTriangularV2, TOKEN_USDT, TOKEN_WPOL,
+    POOLS_WPOL_USDT, RutaTriangularV2Generada, TOKEN_USDT, TOKEN_WPOL, rutas_triangulares_v2,
 };
 use ethers::{
     middleware::SignerMiddleware,
@@ -454,7 +454,7 @@ async fn estimar_gas_triangular_v2(
 }
 
 fn precio_token_inicio_por_pol(
-    ruta: &RutaTriangularV2,
+    ruta: &RutaTriangularV2Generada,
     reservas: &HashMap<String, ReservasPool>,
 ) -> Option<f64> {
     let primer_paso = ruta.pasos.first()?;
@@ -520,13 +520,13 @@ fn montos_triangular_v2(simbolo_inicio: &str, decimales_inicio: u32) -> Vec<U256
 }
 
 fn simular_ruta_triangular_v2(
-    ruta: &RutaTriangularV2,
+    ruta: &RutaTriangularV2Generada,
     monto_inicial: U256,
     reservas: &HashMap<String, ReservasPool>,
 ) -> Option<ResultadoTriangularV2> {
     let mut monto_actual = monto_inicial;
 
-    for paso in ruta.pasos {
+    for paso in &ruta.pasos {
         let reservas_pool = reservas.get(paso.pool)?;
         let token_in: Address = paso.token_in.parse().ok()?;
         let token_out: Address = paso.token_out.parse().ok()?;
@@ -544,7 +544,7 @@ fn simular_ruta_triangular_v2(
 
 async fn leer_reservas_ruta_triangular_v2(
     cliente: &Arc<SignerMiddleware<Provider<Http>, LocalWallet>>,
-    ruta: &RutaTriangularV2,
+    ruta: &RutaTriangularV2Generada,
 ) -> HashMap<String, ReservasPool> {
     let lecturas = ruta.pasos.iter().map(|paso| async move {
         let reservas = consultar_reservas(cliente, paso.pool).await?;
@@ -567,7 +567,7 @@ async fn leer_reservas_ruta_triangular_v2(
 
 async fn mejor_candidato_triangular_v2(
     cliente: &Arc<SignerMiddleware<Provider<Http>, LocalWallet>>,
-    ruta: &RutaTriangularV2,
+    ruta: &RutaTriangularV2Generada,
     reservas: &HashMap<String, ReservasPool>,
 ) -> Option<CandidatoTriangularV2> {
     let precio_token_por_pol = precio_token_inicio_por_pol(ruta, reservas)?;
@@ -1117,10 +1117,11 @@ pub async fn iniciar_escaner_triangular_v2(rpc_mainnet: &str, wallet: &LocalWall
     let wallet_mainnet = wallet.clone().with_chain_id(137u64);
     let cliente = Arc::new(SignerMiddleware::new(proveedor, wallet_mainnet));
     let mut ultimo_aviso: HashMap<String, std::time::Instant> = HashMap::new();
+    let rutas = rutas_triangulares_v2();
 
     info!(
         "Escaner triangular V2 activo: {} rutas, cada {}s, ejecucion={}, neto minimo {:.6} USDT",
-        RUTAS_TRIANGULARES_V2.len(),
+        rutas.len(),
         intervalo,
         ejecutar,
         usdt_legible(min_neto)
@@ -1133,7 +1134,7 @@ pub async fn iniciar_escaner_triangular_v2(rpc_mainnet: &str, wallet: &LocalWall
     }
 
     loop {
-        for ruta in RUTAS_TRIANGULARES_V2 {
+        for ruta in &rutas {
             let reservas = leer_reservas_ruta_triangular_v2(&cliente, ruta).await;
 
             if reservas.len() != ruta.pasos.len() {
@@ -1187,7 +1188,7 @@ pub async fn iniciar_escaner_triangular_v2(rpc_mainnet: &str, wallet: &LocalWall
             }
 
             let en_cooldown = ultimo_aviso
-                .get(ruta.nombre)
+                .get(&ruta.nombre)
                 .is_some_and(|ultimo| ultimo.elapsed() < Duration::from_secs(cooldown));
 
             if en_cooldown {
@@ -1802,12 +1803,12 @@ mod tests {
                 token_out: "0x0101010101010101010101010101010101010101",
             },
         ];
-        static RUTA: RutaTriangularV2 = RutaTriangularV2 {
-            nombre: "A -> B -> C -> A",
+        let ruta = crate::pools::RutaTriangularV2Generada {
+            nombre: "A -> B -> C -> A".to_string(),
             token_inicio: "0x0101010101010101010101010101010101010101",
             simbolo_inicio: "A",
             decimales_inicio: 0,
-            pasos: PASOS,
+            pasos: PASOS.to_vec(),
         };
 
         let mut reservas = HashMap::new();
@@ -1839,7 +1840,7 @@ mod tests {
             },
         );
 
-        let resultado = simular_ruta_triangular_v2(&RUTA, U256::from(10u64), &reservas)
+        let resultado = simular_ruta_triangular_v2(&ruta, U256::from(10u64), &reservas)
             .expect("debe simular una ruta rentable");
 
         assert!(resultado.monto_final > resultado.monto_inicial);

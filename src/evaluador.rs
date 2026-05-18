@@ -7,11 +7,11 @@ pub struct DatosSwap {
     pub amount1_in: u128,
     pub amount0_out: u128,
     pub amount1_out: u128,
+    pub decimales0: u32,
+    pub decimales1: u32,
 }
 
 const UMBRAL_PORCENTAJE_DEFECTO: f64 = 0.8;
-const DECIMALES_WPOL: f64 = 1e18;
-const DECIMALES_USDT: f64 = 1e6;
 
 fn umbral_porcentaje() -> f64 {
     std::env::var("UMBRAL_PORCENTAJE")
@@ -24,15 +24,15 @@ fn umbral_porcentaje() -> f64 {
 // Precio observado entre tokens, normalizando decimales de ambos tokens.
 pub fn calcular_precio(swap: &DatosSwap) -> Option<f64> {
     if swap.amount1_in > 0 && swap.amount0_out > 0 {
-        let usdt_entrada = swap.amount1_in as f64 / DECIMALES_USDT;
-        let wpol_salida = swap.amount0_out as f64 / DECIMALES_WPOL;
-        return Some(usdt_entrada / wpol_salida);
+        let token1_entrada = swap.amount1_in as f64 / 10f64.powi(swap.decimales1 as i32);
+        let token0_salida = swap.amount0_out as f64 / 10f64.powi(swap.decimales0 as i32);
+        return Some(token1_entrada / token0_salida);
     }
 
     if swap.amount0_in > 0 && swap.amount1_out > 0 {
-        let wpol_entrada = swap.amount0_in as f64 / DECIMALES_WPOL;
-        let usdt_salida = swap.amount1_out as f64 / DECIMALES_USDT;
-        return Some(usdt_salida / wpol_entrada);
+        let token0_entrada = swap.amount0_in as f64 / 10f64.powi(swap.decimales0 as i32);
+        let token1_salida = swap.amount1_out as f64 / 10f64.powi(swap.decimales1 as i32);
+        return Some(token1_salida / token0_entrada);
     }
 
     None
